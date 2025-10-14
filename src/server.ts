@@ -1,5 +1,3 @@
-// backend/src/server.ts - Complete WebSocket Server
-
 import WebSocket, { WebSocketServer } from 'ws';
 import { createServer } from 'http';
 import { parse } from 'url';
@@ -59,6 +57,11 @@ interface BattleSession {
 class GameManager {
   private games: Map<number, GameSession> = new Map();
   private gameTimers: Map<number, NodeJS.Timeout> = new Map();
+  private onGameStateChange?: (gameId: number) => void;
+
+  setGameStateChangeCallback(callback: (gameId: number) => void) {
+    this.onGameStateChange = callback;
+  }
 
   getOrCreateGame(gameId: number): GameSession {
     if (!this.games.has(gameId)) {
@@ -102,6 +105,22 @@ class GameManager {
     const game = this.getOrCreateGame(gameId);
     game.readyPlayers.add(playerId);
     console.log(`[GameManager] Player ready: ${game.readyPlayers.size} ready`);
+
+    // Notify state change
+    if (this.onGameStateChange) {
+      this.onGameStateChange(gameId);
+    }
+  }
+
+  canStartGame(gameId: number): { canStart: boolean; readyCount: number } {
+    const game = this.games.get(gameId);
+    if (!game) return { canStart: false, readyCount: 0 };
+
+    const readyCount = game.readyPlayers.size;
+    return {
+      canStart: readyCount >= 2,
+      readyCount
+    };
   }
 
   startGame(gameId: number): { success: boolean; message: string; gameState?: GameSession } {
@@ -121,24 +140,39 @@ class GameManager {
     if (readyCount === 1) {
       game.phase = 'ended';
       game.winner = Array.from(game.readyPlayers)[0];
+      console.log(`[GameManager] Auto-winner: ${game.winner.slice(0, 8)}`);
       return { success: true, message: 'Auto-winner', gameState: game };
     }
 
+    // Start countdown
     game.phase = 'countdown';
     game.countdownStartTime = Date.now();
 
+    console.log(`[GameManager] Game ${gameId} starting countdown with ${readyCount} players`);
+
+    // Schedule transition to active
     const timer = setTimeout(() => {
-      const g = this.games.get(gameId);
-      if (g) {
-        g.phase = 'active';
-        g.startTime = Date.now();
-        console.log(`[GameManager] Game ${gameId} -> ACTIVE`);
-      }
+      this.transitionToActive(gameId);
     }, game.countdownDuration);
 
     this.gameTimers.set(gameId, timer);
 
     return { success: true, message: 'Countdown started', gameState: game };
+  }
+
+  private transitionToActive(gameId: number): void {
+    const game = this.games.get(gameId);
+    if (!game) return;
+
+    game.phase = 'active';
+    game.startTime = Date.now();
+
+    console.log(`[GameManager] Game ${gameId} -> ACTIVE`);
+
+    // Notify state change
+    if (this.onGameStateChange) {
+      this.onGameStateChange(gameId);
+    }
   }
 
   getGameState(gameId: number): GameSession | undefined {
@@ -200,7 +234,10 @@ class BattleManager {
         challengeId,
         players: Array.from(battle.players)
       });
-      setTimeout(() => { battle!.status = 'in_progress'; }, 1000);
+      setTimeout(() => {
+        const b = this.battles.get(challengeId);
+        if (b) b.status = 'in_progress';
+      }, 1000);
     }
 
     ws.on('message', (data: Buffer) => {
@@ -343,10 +380,16 @@ class UnifiedServer {
   private gameManager = new GameManager();
   private battleManager = new BattleManager();
   private connections: Map<string, WebSocket> = new Map();
+  private gameDeadlineTimers: Map<number, NodeJS.Timeout> = new Map();
 
   constructor(port: number = 3001) {
     const server = createServer();
     this.wss = new WebSocketServer({ server });
+
+    // Setup game state change callback
+    this.gameManager.setGameStateChangeCallback((gameId) => {
+      this.broadcastGameState(gameId);
+    });
 
     this.wss.on('connection', (ws, req) => {
       const { pathname, query } = parse(req.url || '', true);
@@ -419,12 +462,60 @@ class UnifiedServer {
     if (msg.type === 'mark_ready') {
       this.gameManager.markPlayerReady(gameId, playerId);
       this.broadcastGameState(gameId);
+
+      // Check if we can auto-start
+      this.checkAutoStart(gameId);
     } else if (msg.type === 'start_game') {
       const result = this.gameManager.startGame(gameId);
       if (result.success) {
         this.broadcastGameState(gameId);
       }
+    } else if (msg.type === 'set_deadline') {
+      // Client is setting a deadline - start monitoring
+      this.startDeadlineMonitor(gameId, msg.deadline);
     }
+  }
+
+  private checkAutoStart(gameId: number): void {
+    const { canStart, readyCount } = this.gameManager.canStartGame(gameId);
+
+    if (canStart) {
+      console.log(`[Server] Auto-starting game ${gameId} - ${readyCount} players ready`);
+
+      setTimeout(() => {
+        const result = this.gameManager.startGame(gameId);
+        if (result.success) {
+          this.broadcastGameState(gameId);
+        }
+      }, 1000); // Small delay for UI sync
+    }
+  }
+
+  private startDeadlineMonitor(gameId: number, deadline: number): void {
+    // Clear existing timer
+    const existingTimer = this.gameDeadlineTimers.get(gameId);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
+
+    const now = Date.now();
+    const timeUntilDeadline = deadline - now;
+
+    if (timeUntilDeadline <= 0) {
+      // Deadline already passed
+      this.checkAutoStart(gameId);
+      return;
+    }
+
+    console.log(`[Server] Setting deadline monitor for game ${gameId} - ${Math.round(timeUntilDeadline / 1000)}s`);
+
+    // Set timer to auto-start when deadline expires
+    const timer = setTimeout(() => {
+      console.log(`[Server] Deadline expired for game ${gameId}, auto-starting...`);
+      this.checkAutoStart(gameId);
+    }, timeUntilDeadline);
+
+    this.gameDeadlineTimers.set(gameId, timer);
   }
 
   private broadcastGameState(gameId: number) {
@@ -454,6 +545,62 @@ class UnifiedServer {
       ws.send(JSON.stringify(msg));
     }
   }
+}
+
+const PORT = parseInt(process.env.PORT || process.env.WS_PORT || '3001');
+new UnifiedServer(PORT); {
+  const msg = JSON.parse(data.toString());
+  this.handlePhase3Message(gameId, playerId, msg);
+} catch (e) {
+  console.error('[Phase3] Parse error:', e);
+}
+        });
+
+ws.on('close', () => {
+  this.connections.delete(connId);
+  this.gameManager.removePlayer(gameId, playerId);
+});
+    }
+
+    private handlePhase3Message(gameId: number, playerId: string, msg: any) {
+  if (msg.type === 'mark_ready') {
+    this.gameManager.markPlayerReady(gameId, playerId);
+    this.broadcastGameState(gameId);
+  } else if (msg.type === 'start_game') {
+    const result = this.gameManager.startGame(gameId);
+    if (result.success) {
+      this.broadcastGameState(gameId);
+    }
+  }
+}
+
+    private broadcastGameState(gameId: number) {
+  const game = this.gameManager.getGameState(gameId);
+  if (!game) return;
+
+  const msg = {
+    type: 'game_state_update',
+    gameState: {
+      phase: game.phase,
+      countdownStartTime: game.countdownStartTime,
+      countdownDuration: game.countdownDuration,
+      readyPlayers: game.readyPlayers.size,
+      totalPlayers: game.players.size
+    }
+  };
+
+  this.connections.forEach((ws, connId) => {
+    if (connId.startsWith(`${gameId}-`)) {
+      this.sendTo(ws, msg);
+    }
+  });
+}
+
+    private sendTo(ws: WebSocket, msg: any) {
+  if (ws.readyState === WebSocket.OPEN) {
+    ws.send(JSON.stringify(msg));
+  }
+}
 }
 
 const PORT = parseInt(process.env.PORT || process.env.WS_PORT || '3001');
