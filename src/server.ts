@@ -1,10 +1,8 @@
+// backend/src/server.ts - Complete Clean WebSocket Server
+
 import WebSocket, { WebSocketServer } from 'ws';
 import { createServer } from 'http';
 import { parse } from 'url';
-
-// ============================================================================
-// TYPES
-// ============================================================================
 
 interface PlayerState {
   id: string;
@@ -50,10 +48,6 @@ interface BattleSession {
   createdAt: number;
 }
 
-// ============================================================================
-// PHASE 3 GAME MANAGER
-// ============================================================================
-
 class GameManager {
   private games: Map<number, GameSession> = new Map();
   private gameTimers: Map<number, NodeJS.Timeout> = new Map();
@@ -75,7 +69,6 @@ class GameManager {
         startTime: null,
         winner: null
       });
-      console.log(`[GameManager] Created game: ${gameId}`);
     }
     return this.games.get(gameId)!;
   }
@@ -83,30 +76,24 @@ class GameManager {
   addPlayer(gameId: number, playerId: string): void {
     const game = this.getOrCreateGame(gameId);
     if (!game.players.has(playerId)) {
-      console.log(`[GameManager] Player ${playerId.slice(0, 8)} joined game ${gameId}`);
+      console.log(`[GM] Player ${playerId.slice(0, 8)} joined game ${gameId}`);
     }
   }
 
   removePlayer(gameId: number, playerId: string): void {
     const game = this.games.get(gameId);
     if (!game) return;
-
     game.players.delete(playerId);
     game.readyPlayers.delete(playerId);
-
     if (game.players.size === 0) {
       this.clearGameTimer(gameId);
       this.games.delete(gameId);
-      console.log(`[GameManager] Game ${gameId} deleted`);
     }
   }
 
   markPlayerReady(gameId: number, playerId: string): void {
     const game = this.getOrCreateGame(gameId);
     game.readyPlayers.add(playerId);
-    console.log(`[GameManager] Player ready: ${game.readyPlayers.size} ready`);
-
-    // Notify state change
     if (this.onGameStateChange) {
       this.onGameStateChange(gameId);
     }
@@ -115,64 +102,35 @@ class GameManager {
   canStartGame(gameId: number): { canStart: boolean; readyCount: number } {
     const game = this.games.get(gameId);
     if (!game) return { canStart: false, readyCount: 0 };
-
     const readyCount = game.readyPlayers.size;
-    return {
-      canStart: readyCount >= 2,
-      readyCount
-    };
+    return { canStart: readyCount >= 2, readyCount };
   }
 
   startGame(gameId: number): { success: boolean; message: string; gameState?: GameSession } {
     const game = this.games.get(gameId);
     if (!game) return { success: false, message: 'Game not found' };
-
     const readyCount = game.readyPlayers.size;
-
-    if (game.phase !== 'waiting') {
-      return { success: false, message: `Game in phase: ${game.phase}` };
-    }
-
-    if (readyCount === 0) {
-      return { success: false, message: 'No players ready' };
-    }
-
+    if (game.phase !== 'waiting') return { success: false, message: `Game in phase: ${game.phase}` };
+    if (readyCount === 0) return { success: false, message: 'No players ready' };
     if (readyCount === 1) {
       game.phase = 'ended';
       game.winner = Array.from(game.readyPlayers)[0];
-      console.log(`[GameManager] Auto-winner: ${game.winner.slice(0, 8)}`);
       return { success: true, message: 'Auto-winner', gameState: game };
     }
-
-    // Start countdown
     game.phase = 'countdown';
     game.countdownStartTime = Date.now();
-
-    console.log(`[GameManager] Game ${gameId} starting countdown with ${readyCount} players`);
-
-    // Schedule transition to active
     const timer = setTimeout(() => {
-      this.transitionToActive(gameId);
+      const g = this.games.get(gameId);
+      if (g) {
+        g.phase = 'active';
+        g.startTime = Date.now();
+        if (this.onGameStateChange) {
+          this.onGameStateChange(gameId);
+        }
+      }
     }, game.countdownDuration);
-
     this.gameTimers.set(gameId, timer);
-
     return { success: true, message: 'Countdown started', gameState: game };
-  }
-
-  private transitionToActive(gameId: number): void {
-    const game = this.games.get(gameId);
-    if (!game) return;
-
-    game.phase = 'active';
-    game.startTime = Date.now();
-
-    console.log(`[GameManager] Game ${gameId} -> ACTIVE`);
-
-    // Notify state change
-    if (this.onGameStateChange) {
-      this.onGameStateChange(gameId);
-    }
   }
 
   getGameState(gameId: number): GameSession | undefined {
@@ -188,16 +146,11 @@ class GameManager {
   }
 }
 
-// ============================================================================
-// BATTLE MANAGER
-// ============================================================================
-
 class BattleManager {
   private battles: Map<string, BattleSession> = new Map();
 
   handleConnection(ws: WebSocket, challengeId: string, playerId: string) {
     let battle = this.battles.get(challengeId);
-
     if (!battle) {
       battle = {
         challengeId,
@@ -210,95 +163,49 @@ class BattleManager {
       };
       this.battles.set(challengeId, battle);
     }
-
     battle.players.add(playerId);
     battle.connections.set(playerId, ws);
-
-    this.sendTo(ws, {
-      type: 'player_joined',
-      playerId,
-      playersCount: battle.players.size,
-      challengeId
-    });
-
-    this.broadcastToBattle(challengeId, {
-      type: 'player_joined',
-      playerId,
-      playersCount: battle.players.size
-    }, playerId);
-
+    this.sendTo(ws, { type: 'player_joined', playerId, playersCount: battle.players.size, challengeId });
+    this.broadcastToBattle(challengeId, { type: 'player_joined', playerId, playersCount: battle.players.size }, playerId);
     if (battle.players.size === 2 && battle.status === 'waiting') {
       battle.status = 'ready';
-      this.broadcastToBattle(challengeId, {
-        type: 'game_ready',
-        challengeId,
-        players: Array.from(battle.players)
-      });
+      this.broadcastToBattle(challengeId, { type: 'game_ready', challengeId, players: Array.from(battle.players) });
       setTimeout(() => {
         const b = this.battles.get(challengeId);
         if (b) b.status = 'in_progress';
       }, 1000);
     }
-
     ws.on('message', (data: Buffer) => {
       try {
         const msg = JSON.parse(data.toString());
         this.handleMessage(challengeId, playerId, msg);
-      } catch (e) {
-        console.error('[Battle] Parse error:', e);
-      }
+      } catch (e) { }
     });
-
-    ws.on('close', () => {
-      this.handleDisconnect(challengeId, playerId);
-    });
+    ws.on('close', () => this.handleDisconnect(challengeId, playerId));
   }
 
   private handleMessage(challengeId: string, playerId: string, msg: any) {
     const battle = this.battles.get(challengeId);
     if (!battle) return;
-
     if (msg.type === 'submit_move') {
       const round = msg.round;
-      const move: BattleMove = {
-        playerId,
-        move: msg.move,
-        round,
-        submittedAt: Date.now()
-      };
-
-      if (!battle.moves.has(round)) {
-        battle.moves.set(round, []);
-      }
-
+      const move: BattleMove = { playerId, move: msg.move, round, submittedAt: Date.now() };
+      if (!battle.moves.has(round)) battle.moves.set(round, []);
       const roundMoves = battle.moves.get(round)!;
       if (roundMoves.some(m => m.playerId === playerId)) return;
-
       roundMoves.push(move);
-
-      this.broadcastToBattle(challengeId, {
-        type: 'opponent_moved',
-        playerId
-      }, playerId);
-
+      this.broadcastToBattle(challengeId, { type: 'opponent_moved', playerId }, playerId);
       if (roundMoves.length === 2) {
         this.broadcastToBattle(challengeId, {
           type: 'round_complete',
           round,
-          moves: roundMoves.map(m => ({
-            playerAddress: m.playerId,
-            move: m.move
-          }))
+          moves: roundMoves.map(m => ({ playerAddress: m.playerId, move: m.move }))
         });
       }
     } else if (msg.type === 'game_ended') {
       battle.status = 'ended';
       battle.winner = msg.winner;
-      this.broadcastToBattle(challengeId, {
-        type: 'game_ended',
-        winner: msg.winner,
-        challengeId
-      });
+      this.broadcastToBattle(challengeId, { type: 'game_ended', winner: msg.winner, challengeId });
       setTimeout(() => this.cleanup(challengeId), 30000);
     }
   }
@@ -306,56 +213,36 @@ class BattleManager {
   private handleDisconnect(challengeId: string, playerId: string) {
     const battle = this.battles.get(challengeId);
     if (!battle) return;
-
     battle.connections.delete(playerId);
-
-    this.broadcastToBattle(challengeId, {
-      type: 'opponent_left',
-      playerId
-    }, playerId);
-
+    this.broadcastToBattle(challengeId, { type: 'opponent_left', playerId }, playerId);
     if (battle.status === 'in_progress') {
       const remaining = Array.from(battle.players).find(p => p !== playerId);
       if (remaining) {
         battle.winner = remaining;
-        this.broadcastToBattle(challengeId, {
-          type: 'game_ended',
-          winner: remaining,
-          challengeId
-        });
+        this.broadcastToBattle(challengeId, { type: 'game_ended', winner: remaining, challengeId });
       }
     }
-
-    if (battle.connections.size === 0) {
-      this.cleanup(challengeId);
-    }
+    if (battle.connections.size === 0) this.cleanup(challengeId);
   }
 
   private sendTo(ws: WebSocket, msg: any) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg));
-    }
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   }
 
   private broadcastToBattle(id: string, msg: any, exclude?: string) {
     const battle = this.battles.get(id);
     if (!battle) return;
-
     battle.connections.forEach((ws, pid) => {
-      if (pid !== exclude) {
-        this.sendTo(ws, msg);
-      }
+      if (pid !== exclude) this.sendTo(ws, msg);
     });
   }
 
   private cleanup(id: string) {
     const battle = this.battles.get(id);
     if (!battle) return;
-
     battle.connections.forEach(ws => {
       if (ws.readyState === WebSocket.OPEN) ws.close();
     });
-
     this.battles.delete(id);
   }
 
@@ -363,17 +250,11 @@ class BattleManager {
     setInterval(() => {
       const now = Date.now();
       this.battles.forEach((b, id) => {
-        if (now - b.createdAt > 1800000 && b.status !== 'in_progress') {
-          this.cleanup(id);
-        }
+        if (now - b.createdAt > 1800000 && b.status !== 'in_progress') this.cleanup(id);
       });
     }, 60000);
   }
 }
-
-// ============================================================================
-// MAIN SERVER
-// ============================================================================
 
 class UnifiedServer {
   private wss: WebSocketServer;
@@ -385,50 +266,35 @@ class UnifiedServer {
   constructor(port: number = 3001) {
     const server = createServer();
     this.wss = new WebSocketServer({ server });
-
-    // Setup game state change callback
-    this.gameManager.setGameStateChangeCallback((gameId) => {
-      this.broadcastGameState(gameId);
-    });
-
+    this.gameManager.setGameStateChangeCallback((gameId) => this.broadcastGameState(gameId));
     this.wss.on('connection', (ws, req) => {
       const { pathname, query } = parse(req.url || '', true);
-
       if (pathname === '/battle') {
         const challengeId = query.challengeId as string;
         const playerId = query.playerId as string;
-
         if (!challengeId || !playerId) {
           ws.close(1008, 'Invalid params');
           return;
         }
-
         this.battleManager.handleConnection(ws, challengeId, playerId);
       } else {
         const gameId = parseInt(query.gameId as string);
         const playerId = query.playerId as string;
-
         if (!gameId || !playerId) {
           ws.close(1008, 'Invalid params');
           return;
         }
-
         this.handlePhase3(ws, gameId, playerId);
       }
     });
-
     this.battleManager.startCleanupTimer();
-
-    server.listen(port, () => {
-      console.log(`[Server] Running on port ${port}`);
-    });
+    server.listen(port, () => console.log(`[Server] Running on port ${port}`));
   }
 
   private handlePhase3(ws: WebSocket, gameId: number, playerId: string) {
     const connId = `${gameId}-${playerId}`;
     this.connections.set(connId, ws);
     this.gameManager.addPlayer(gameId, playerId);
-
     const game = this.gameManager.getGameState(gameId);
     if (game) {
       this.sendTo(ws, {
@@ -442,16 +308,12 @@ class UnifiedServer {
         }
       });
     }
-
     ws.on('message', (data: Buffer) => {
       try {
         const msg = JSON.parse(data.toString());
         this.handlePhase3Message(gameId, playerId, msg);
-      } catch (e) {
-        console.error('[Phase3] Parse error:', e);
-      }
+      } catch (e) { }
     });
-
     ws.on('close', () => {
       this.connections.delete(connId);
       this.gameManager.removePlayer(gameId, playerId);
@@ -462,66 +324,41 @@ class UnifiedServer {
     if (msg.type === 'mark_ready') {
       this.gameManager.markPlayerReady(gameId, playerId);
       this.broadcastGameState(gameId);
-
-      // Check if we can auto-start
       this.checkAutoStart(gameId);
     } else if (msg.type === 'start_game') {
       const result = this.gameManager.startGame(gameId);
-      if (result.success) {
-        this.broadcastGameState(gameId);
-      }
+      if (result.success) this.broadcastGameState(gameId);
     } else if (msg.type === 'set_deadline') {
-      // Client is setting a deadline - start monitoring
       this.startDeadlineMonitor(gameId, msg.deadline);
     }
   }
 
   private checkAutoStart(gameId: number): void {
     const { canStart, readyCount } = this.gameManager.canStartGame(gameId);
-
     if (canStart) {
-      console.log(`[Server] Auto-starting game ${gameId} - ${readyCount} players ready`);
-
       setTimeout(() => {
         const result = this.gameManager.startGame(gameId);
-        if (result.success) {
-          this.broadcastGameState(gameId);
-        }
-      }, 1000); // Small delay for UI sync
+        if (result.success) this.broadcastGameState(gameId);
+      }, 1000);
     }
   }
 
   private startDeadlineMonitor(gameId: number, deadline: number): void {
-    // Clear existing timer
     const existingTimer = this.gameDeadlineTimers.get(gameId);
-    if (existingTimer) {
-      clearTimeout(existingTimer);
-    }
-
+    if (existingTimer) clearTimeout(existingTimer);
     const now = Date.now();
     const timeUntilDeadline = deadline - now;
-
     if (timeUntilDeadline <= 0) {
-      // Deadline already passed
       this.checkAutoStart(gameId);
       return;
     }
-
-    console.log(`[Server] Setting deadline monitor for game ${gameId} - ${Math.round(timeUntilDeadline / 1000)}s`);
-
-    // Set timer to auto-start when deadline expires
-    const timer = setTimeout(() => {
-      console.log(`[Server] Deadline expired for game ${gameId}, auto-starting...`);
-      this.checkAutoStart(gameId);
-    }, timeUntilDeadline);
-
+    const timer = setTimeout(() => this.checkAutoStart(gameId), timeUntilDeadline);
     this.gameDeadlineTimers.set(gameId, timer);
   }
 
   private broadcastGameState(gameId: number) {
     const game = this.gameManager.getGameState(gameId);
     if (!game) return;
-
     const msg = {
       type: 'game_state_update',
       gameState: {
@@ -532,75 +369,14 @@ class UnifiedServer {
         totalPlayers: game.players.size
       }
     };
-
     this.connections.forEach((ws, connId) => {
-      if (connId.startsWith(`${gameId}-`)) {
-        this.sendTo(ws, msg);
-      }
+      if (connId.startsWith(`${gameId}-`)) this.sendTo(ws, msg);
     });
   }
 
   private sendTo(ws: WebSocket, msg: any) {
-    if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg));
-    }
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(msg));
   }
-}
-
-const PORT = parseInt(process.env.PORT || process.env.WS_PORT || '3001');
-new UnifiedServer(PORT); {
-  const msg = JSON.parse(data.toString());
-  this.handlePhase3Message(gameId, playerId, msg);
-} catch (e) {
-  console.error('[Phase3] Parse error:', e);
-}
-        });
-
-ws.on('close', () => {
-  this.connections.delete(connId);
-  this.gameManager.removePlayer(gameId, playerId);
-});
-    }
-
-    private handlePhase3Message(gameId: number, playerId: string, msg: any) {
-  if (msg.type === 'mark_ready') {
-    this.gameManager.markPlayerReady(gameId, playerId);
-    this.broadcastGameState(gameId);
-  } else if (msg.type === 'start_game') {
-    const result = this.gameManager.startGame(gameId);
-    if (result.success) {
-      this.broadcastGameState(gameId);
-    }
-  }
-}
-
-    private broadcastGameState(gameId: number) {
-  const game = this.gameManager.getGameState(gameId);
-  if (!game) return;
-
-  const msg = {
-    type: 'game_state_update',
-    gameState: {
-      phase: game.phase,
-      countdownStartTime: game.countdownStartTime,
-      countdownDuration: game.countdownDuration,
-      readyPlayers: game.readyPlayers.size,
-      totalPlayers: game.players.size
-    }
-  };
-
-  this.connections.forEach((ws, connId) => {
-    if (connId.startsWith(`${gameId}-`)) {
-      this.sendTo(ws, msg);
-    }
-  });
-}
-
-    private sendTo(ws: WebSocket, msg: any) {
-  if (ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify(msg));
-  }
-}
 }
 
 const PORT = parseInt(process.env.PORT || process.env.WS_PORT || '3001');
