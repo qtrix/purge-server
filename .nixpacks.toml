@@ -1,16 +1,18 @@
-# .nixpacks.toml - Railway Build Configuration
 
 [phases.setup]
 nixPkgs = ["nodejs-18_x"]
 
 [phases.install]
 cmds = [
-  "cd backend && npm install --legacy-peer-deps"
+  "cd backend",
+  "rm -f package-lock.json",
+  "npm install --legacy-peer-deps"
 ]
 
 [phases.build]
 cmds = [
-  "cd backend && npm run build"
+  "cd backend",
+  "npm run build"
 ]
 
 [start]
