@@ -8,5 +8,14 @@
     "startCommand": "cd backend && npm start",
     "restartPolicyType": "ON_FAILURE",
     "restartPolicyMaxRetries": 10
+  },
+  "nixpacksConfig": {
+    "phases": {
+      "install": {
+        "cmds": [
+          "npm install --legacy-peer-deps"
+        ]
+      }
+    }
   }
 }
