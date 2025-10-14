@@ -9,9 +9,8 @@ cmds = [
 
 [phases.build]
 cmds = [
-  "cd backend",
   "npm run build"
 ]
 
 [start]
-cmd = "cd backend && node dist/server.js"
+cmd = "node dist/server.js"
