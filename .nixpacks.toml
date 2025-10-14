@@ -3,7 +3,6 @@ nixPkgs = ["nodejs-18_x"]
 
 [phases.install]
 cmds = [
-  "cd backend",
   "rm -f package-lock.json",
   "npm install --legacy-peer-deps"
 ]
