@@ -1,22 +1,22 @@
 {
-  "name": "phase3-websocket-server",
+  "name": "purge-server",
   "version": "1.0.0",
-  "description": "Professional WebSocket server for Phase 3 multiplayer",
+  "description": "WebSocket server for Solana Survivor Phase 3",
   "main": "dist/server.js",
   "scripts": {
-    "dev": "nodemon --watch 'src/**/*.ts' --exec 'ts-node' src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "dev": "ts-node src/server.ts",
+    "watch": "tsc --watch",
+    "clean": "rm -rf dist"
   },
   "keywords": [
     "websocket",
-    "multiplayer",
-    "game",
     "solana",
-    "phase3"
+    "game",
+    "multiplayer"
   ],
-  "author": "Your Name",
+  "author": "",
   "license": "MIT",
   "dependencies": {
     "ws": "^8.14.2"
@@ -24,8 +24,10 @@
   "devDependencies": {
     "@types/node": "^20.8.0",
     "@types/ws": "^8.5.8",
-    "nodemon": "^3.0.1",
     "ts-node": "^10.9.1",
     "typescript": "^5.2.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
   }
 }

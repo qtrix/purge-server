@@ -3,8 +3,7 @@ nixPkgs = ["nodejs-18_x"]
 
 [phases.install]
 cmds = [
-  "rm -f package-lock.json",
-  "npm install --legacy-peer-deps"
+  "npm install"
 ]
 
 [phases.build]
@@ -13,4 +12,4 @@ cmds = [
 ]
 
 [start]
-cmd = "node dist/server.js"
+cmd = "npm start"

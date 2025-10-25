@@ -1,12 +1,6 @@
-// backend/src/server.ts - COMPLETE WebSocket Server with ALL Features + Sync Fixes
-
 import WebSocket, { WebSocketServer } from 'ws';
 import { createServer } from 'http';
 import { parse } from 'url';
-
-// ============================================================================
-// TYPES
-// ============================================================================
 
 interface PlayerState {
   id: string;
@@ -62,16 +56,12 @@ interface BattleSession {
   createdAt: number;
 }
 
-// ============================================================================
-// PHASE 3 GAME MANAGER
-// ============================================================================
-
 class GameManager {
   private games: Map<number, GameSession> = new Map();
   private gameTimers: Map<number, NodeJS.Timeout> = new Map();
   private onGameStateChange?: (gameId: number) => void;
 
-  setGameStateChangeCallback(callback: (gameId: number) => void) {
+  setGameStateChangeCallback(callback: (gameId: number) => void): void {
     this.onGameStateChange = callback;
   }
 
@@ -87,16 +77,15 @@ class GameManager {
         startTime: null,
         winner: null
       });
-      console.log(`[GameManager] ✅ Created new game session: ${gameId}`);
+      console.log(`[GameManager] ✅ Created game ${gameId}`);
     }
     return this.games.get(gameId)!;
   }
 
   addPlayer(gameId: number, playerId: string): void {
     const game = this.getOrCreateGame(gameId);
-
     if (!game.players.has(playerId)) {
-      console.log(`[GameManager] ✅ Player ${playerId.slice(0, 8)} joined game ${gameId}`);
+      console.log(`[GameManager] 👤 Player ${playerId.slice(0, 8)} joined game ${gameId}`);
     }
   }
 
@@ -112,14 +101,13 @@ class GameManager {
     if (game.players.size === 0) {
       this.clearGameTimer(gameId);
       this.games.delete(gameId);
-      console.log(`[GameManager] 🧹 Game ${gameId} deleted (no players)`);
+      console.log(`[GameManager] 🗑️ Game ${gameId} deleted (no players)`);
     }
   }
 
   updatePlayerState(gameId: number, playerId: string, state: PlayerState): void {
     const game = this.games.get(gameId);
     if (!game) return;
-
     game.players.set(playerId, state);
   }
 
@@ -127,8 +115,7 @@ class GameManager {
     const game = this.getOrCreateGame(gameId);
     game.readyPlayers.add(playerId);
 
-    console.log(`[GameManager] ✅ Player ${playerId.slice(0, 8)} marked ready in game ${gameId}`);
-    console.log(`[GameManager] 📊 Ready count: ${game.readyPlayers.size}/${game.players.size}`);
+    console.log(`[GameManager] ✅ Player ${playerId.slice(0, 8)} ready (${game.readyPlayers.size}/${game.players.size})`);
 
     if (this.onGameStateChange) {
       this.onGameStateChange(gameId);
@@ -144,7 +131,7 @@ class GameManager {
     const readyCount = game.readyPlayers.size;
 
     if (game.phase !== 'waiting') {
-      return { canStart: false, reason: `Game already in phase: ${game.phase}`, readyCount };
+      return { canStart: false, reason: `Game already ${game.phase}`, readyCount };
     }
 
     if (readyCount === 0) {
@@ -152,10 +139,10 @@ class GameManager {
     }
 
     if (readyCount === 1) {
-      return { canStart: true, reason: 'Auto-winner (1 player ready)', readyCount: 1 };
+      return { canStart: true, reason: 'Auto-winner (1 player)', readyCount: 1 };
     }
 
-    return { canStart: true, reason: `${readyCount} players ready for battle`, readyCount };
+    return { canStart: true, reason: `${readyCount} players ready`, readyCount };
   }
 
   startGame(gameId: number): { success: boolean; message: string; gameState?: GameSession } {
@@ -174,14 +161,14 @@ class GameManager {
       const winnerId = Array.from(game.readyPlayers)[0];
       game.phase = 'ended';
       game.winner = winnerId;
-      console.log(`[GameManager] 🏆 Auto-winner declared: ${winnerId.slice(0, 8)}`);
+      console.log(`[GameManager] 🏆 Auto-winner: ${winnerId.slice(0, 8)}`);
       return { success: true, message: 'Auto-winner declared', gameState: game };
     }
 
     game.phase = 'countdown';
     game.countdownStartTime = Date.now();
 
-    console.log(`[GameManager] 🚀 Game ${gameId} starting countdown with ${readyCount} players`);
+    console.log(`[GameManager] ⏱️ Countdown started for game ${gameId} (${readyCount} players)`);
 
     const countdownTimer = setTimeout(() => {
       this.transitionToActive(gameId);
@@ -199,7 +186,7 @@ class GameManager {
     game.phase = 'active';
     game.startTime = Date.now();
 
-    console.log(`[GameManager] 🎮 Game ${gameId} transitioned to ACTIVE phase`);
+    console.log(`[GameManager] 🎮 Game ${gameId} now ACTIVE`);
 
     if (this.onGameStateChange) {
       this.onGameStateChange(gameId);
@@ -215,7 +202,7 @@ class GameManager {
 
     this.clearGameTimer(gameId);
 
-    console.log(`[GameManager] 🏆 Winner declared for game ${gameId}: ${winnerId.slice(0, 8)}`);
+    console.log(`[GameManager] 🏆 Winner: ${winnerId.slice(0, 8)} in game ${gameId}`);
   }
 
   getGameState(gameId: number): GameSession | undefined {
@@ -230,10 +217,6 @@ class GameManager {
     }
   }
 }
-
-// ============================================================================
-// CONNECTION MANAGER - ✅ FIXED: Better sync handling
-// ============================================================================
 
 class ConnectionManager {
   private connections: Map<string, ClientConnection> = new Map();
@@ -255,7 +238,7 @@ class ConnectionManager {
     }
     this.gameConnections.get(gameId)!.add(connectionId);
 
-    console.log(`[ConnectionManager] ✅ Connection added: ${connectionId}`);
+    console.log(`[ConnectionManager] 🔌 Connected: ${connectionId}`);
   }
 
   removeConnection(playerId: string, gameId: number): void {
@@ -271,7 +254,7 @@ class ConnectionManager {
       }
     }
 
-    console.log(`[ConnectionManager] 👋 Connection removed: ${connectionId}`);
+    console.log(`[ConnectionManager] 🔌 Disconnected: ${connectionId}`);
   }
 
   updateHeartbeat(playerId: string, gameId: number): void {
@@ -293,14 +276,17 @@ class ConnectionManager {
     gameConns.forEach(connectionId => {
       const conn = this.connections.get(connectionId);
       if (conn && conn.playerId !== excludePlayerId && conn.ws.readyState === WebSocket.OPEN) {
-        conn.ws.send(messageStr);
-        sentCount++;
+        try {
+          conn.ws.send(messageStr);
+          sentCount++;
+        } catch (error) {
+          console.error(`[ConnectionManager] ❌ Send error to ${conn.playerId.slice(0, 8)}:`, error);
+        }
       }
     });
 
-    // ✅ FIX: Log pentru debugging
-    if (message.type === 'player_state_update' || message.type === 'sync') {
-      console.log(`[ConnectionManager] 📡 Broadcast ${message.type} to game ${gameId}: ${sentCount} recipients`);
+    if (message.type !== 'heartbeat_ack' && message.type !== 'player_state_update') {
+      console.log(`[ConnectionManager] 📡 Broadcast ${message.type} to ${sentCount} players in game ${gameId}`);
     }
   }
 
@@ -309,7 +295,11 @@ class ConnectionManager {
     const conn = this.connections.get(connectionId);
 
     if (conn && conn.ws.readyState === WebSocket.OPEN) {
-      conn.ws.send(JSON.stringify(message));
+      try {
+        conn.ws.send(JSON.stringify(message));
+      } catch (error) {
+        console.error(`[ConnectionManager] ❌ Send error to ${playerId.slice(0, 8)}:`, error);
+      }
     }
   }
 
@@ -327,11 +317,11 @@ class ConnectionManager {
 
   checkStaleConnections(): void {
     const now = Date.now();
-    const staleThreshold = 60000; // 1 minute
+    const staleThreshold = 60000;
 
     this.connections.forEach((conn, connectionId) => {
       if (now - conn.lastHeartbeat > staleThreshold) {
-        console.log(`[ConnectionManager] ⚠️ Stale connection detected: ${connectionId}`);
+        console.log(`[ConnectionManager] ⚠️ Stale connection: ${connectionId}`);
 
         if (conn.ws.readyState === WebSocket.OPEN) {
           conn.ws.close();
@@ -341,11 +331,14 @@ class ConnectionManager {
       }
     });
   }
-}
 
-// ============================================================================
-// MESSAGE HANDLER - ✅ FIXED: Better state broadcasting
-// ============================================================================
+  getStats(): { totalConnections: number; games: number } {
+    return {
+      totalConnections: this.connections.size,
+      games: this.gameConnections.size
+    };
+  }
+}
 
 class MessageHandler {
   constructor(
@@ -354,39 +347,47 @@ class MessageHandler {
   ) { }
 
   handleMessage(playerId: string, gameId: number, message: any): void {
-    console.log(`[MessageHandler] 📨 ${message.type} from ${playerId.slice(0, 8)} in game ${gameId}`);
+    const shortId = playerId.slice(0, 8);
 
-    switch (message.type) {
-      case 'heartbeat':
-        this.handleHeartbeat(playerId, gameId);
-        break;
+    if (message.type !== 'heartbeat' && message.type !== 'player_state_update') {
+      console.log(`[MessageHandler] 📨 ${message.type} from ${shortId} (game ${gameId})`);
+    }
 
-      case 'mark_ready':
-        this.handleMarkReady(playerId, gameId);
-        break;
+    try {
+      switch (message.type) {
+        case 'heartbeat':
+          this.handleHeartbeat(playerId, gameId);
+          break;
 
-      case 'player_state_update':
-        this.handlePlayerStateUpdate(playerId, gameId, message.state);
-        break;
+        case 'mark_ready':
+          this.handleMarkReady(playerId, gameId);
+          break;
 
-      case 'start_game':
-        this.handleStartGame(playerId, gameId);
-        break;
+        case 'player_state_update':
+          this.handlePlayerStateUpdate(playerId, gameId, message.state);
+          break;
 
-      case 'player_eliminated':
-        this.handlePlayerEliminated(playerId, gameId);
-        break;
+        case 'start_game':
+          this.handleStartGame(playerId, gameId);
+          break;
 
-      case 'declare_winner':
-        this.handleDeclareWinner(playerId, gameId, message.winnerId);
-        break;
+        case 'player_eliminated':
+          this.handlePlayerEliminated(playerId, gameId);
+          break;
 
-      case 'request_sync':
-        this.handleRequestSync(playerId, gameId);
-        break;
+        case 'declare_winner':
+          this.handleDeclareWinner(playerId, gameId, message.winnerId);
+          break;
 
-      default:
-        console.warn(`[MessageHandler] ⚠️ Unknown message type: ${message.type}`);
+        case 'request_sync':
+          this.handleRequestSync(playerId, gameId);
+          break;
+
+        default:
+          console.warn(`[MessageHandler] ⚠️ Unknown type: ${message.type}`);
+      }
+    } catch (error) {
+      console.error(`[MessageHandler] ❌ Error handling ${message.type}:`, error);
     }
   }
 
@@ -412,7 +413,6 @@ class MessageHandler {
 
     this.gameManager.updatePlayerState(gameId, playerId, state);
 
-    // ✅ FIX: Broadcast state immediately to all other players
     this.connectionManager.broadcastToGame(
       gameId,
       {
@@ -420,7 +420,7 @@ class MessageHandler {
         playerId,
         state
       },
-      playerId // exclude sender
+      playerId
     );
   }
 
@@ -450,19 +450,18 @@ class MessageHandler {
       this.gameManager.updatePlayerState(gameId, playerId, playerState);
     }
 
-    console.log(`[MessageHandler] 💀 Player ${playerId.slice(0, 8)} eliminated in game ${gameId}`);
+    console.log(`[MessageHandler] 💀 Player ${playerId.slice(0, 8)} eliminated`);
 
     this.connectionManager.broadcastToGame(gameId, {
       type: 'player_eliminated',
       playerId
     });
 
-    // Check if winner should be declared
     const alivePlayers = Array.from(game.players.values()).filter(p => p.alive);
     if (alivePlayers.length === 1) {
       this.handleDeclareWinner(playerId, gameId, alivePlayers[0].id);
     } else if (alivePlayers.length === 0) {
-      console.warn(`[MessageHandler] ⚠️ No alive players in game ${gameId}`);
+      console.warn(`[MessageHandler] ⚠️ No survivors in game ${gameId}`);
     }
   }
 
@@ -481,26 +480,21 @@ class MessageHandler {
     const game = this.gameManager.getGameState(gameId);
     if (!game) return;
 
-    // ✅ FIX: Send complete game state to requesting player
-    const players = Array.from(game.players.values());
+    const players = Array.from(game.players.values()).filter(p => p.id !== playerId);
 
     this.connectionManager.sendToPlayer(playerId, gameId, {
       type: 'sync',
-      players: players.filter(p => p.id !== playerId) // Don't send player's own state
+      players
     });
 
-    console.log(`[MessageHandler] 📊 Sent sync to ${playerId.slice(0, 8)}: ${players.length - 1} other players`);
+    console.log(`[MessageHandler] 📊 Sync sent to ${playerId.slice(0, 8)}: ${players.length} players`);
   }
 }
-
-// ============================================================================
-// BATTLE MANAGER (Phase 2 RPS)
-// ============================================================================
 
 class BattleManager {
   private battles: Map<string, BattleSession> = new Map();
 
-  handleConnection(ws: WebSocket, challengeId: string, playerId: string) {
+  handleConnection(ws: WebSocket, challengeId: string, playerId: string): void {
     let battle = this.battles.get(challengeId);
 
     if (!battle) {
@@ -514,13 +508,13 @@ class BattleManager {
         createdAt: Date.now()
       };
       this.battles.set(challengeId, battle);
-      console.log(`[BattleManager] ✅ Created battle: ${challengeId}`);
+      console.log(`[BattleManager] ⚔️ Created battle: ${challengeId}`);
     }
 
     battle.players.add(playerId);
     battle.connections.set(playerId, ws);
 
-    console.log(`[BattleManager] ✅ Player ${playerId.slice(0, 8)} joined battle ${challengeId}`);
+    console.log(`[BattleManager] 🎯 Player ${playerId.slice(0, 8)} joined battle ${challengeId}`);
 
     if (battle.players.size === 2 && battle.status === 'waiting') {
       battle.status = 'ready';
@@ -546,13 +540,20 @@ class BattleManager {
     ws.on('error', (err) => {
       console.error(`[BattleManager] ❌ WebSocket error for ${playerId.slice(0, 8)}:`, err);
     });
+
+    this.sendTo(ws, {
+      type: 'connected',
+      challengeId,
+      playerId,
+      message: 'Connected to battle'
+    });
   }
 
-  private handleBattleMessage(id: string, pid: string, msg: any) {
+  private handleBattleMessage(id: string, pid: string, msg: any): void {
     const battle = this.battles.get(id);
     if (!battle) return;
 
-    console.log(`[BattleManager] 📨 ${msg.type} from ${pid.slice(0, 8)} in battle ${id}`);
+    console.log(`[BattleManager] 📨 ${msg.type} from ${pid.slice(0, 8)}`);
 
     switch (msg.type) {
       case 'start_battle':
@@ -567,12 +568,13 @@ class BattleManager {
         break;
 
       case 'heartbeat':
-        this.sendTo(battle.connections.get(pid)!, { type: 'heartbeat_ack' });
+        const ws = battle.connections.get(pid);
+        if (ws) this.sendTo(ws, { type: 'heartbeat_ack' });
         break;
     }
   }
 
-  private handleMove(id: string, pid: string, move: string, round: number) {
+  private handleMove(id: string, pid: string, move: string, round: number): void {
     const battle = this.battles.get(id);
     if (!battle || battle.status !== 'in_progress') return;
 
@@ -613,6 +615,8 @@ class BattleManager {
           winner: result.winner,
           loser: result.loser
         });
+
+        setTimeout(() => this.cleanup(id), 5000);
       }
     }
   }
@@ -631,14 +635,14 @@ class BattleManager {
       : { winner: m2, loser: m1 };
   }
 
-  private removePlayer(id: string, pid: string) {
+  private removePlayer(id: string, pid: string): void {
     const battle = this.battles.get(id);
     if (!battle) return;
 
     battle.players.delete(pid);
     battle.connections.delete(pid);
 
-    console.log(`[BattleManager] 👋 Player ${pid.slice(0, 8)} left battle ${id}`);
+    console.log(`[BattleManager] 👋 Player ${pid.slice(0, 8)} left battle`);
 
     this.broadcastToBattle(id, {
       type: 'player_disconnected',
@@ -650,13 +654,17 @@ class BattleManager {
     }
   }
 
-  private sendTo(ws: WebSocket, msg: any) {
+  private sendTo(ws: WebSocket, msg: any): void {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(msg));
+      try {
+        ws.send(JSON.stringify(msg));
+      } catch (error) {
+        console.error('[BattleManager] ❌ Send error:', error);
+      }
     }
   }
 
-  private broadcastToBattle(id: string, msg: any, exclude?: string) {
+  private broadcastToBattle(id: string, msg: any, exclude?: string): void {
     const battle = this.battles.get(id);
     if (!battle) return;
 
@@ -667,7 +675,7 @@ class BattleManager {
     });
   }
 
-  private cleanup(id: string) {
+  private cleanup(id: string): void {
     const battle = this.battles.get(id);
     if (!battle) return;
 
@@ -679,7 +687,7 @@ class BattleManager {
     console.log(`[BattleManager] 🧹 Cleaned up battle: ${id}`);
   }
 
-  startCleanupTimer() {
+  startCleanupTimer(): void {
     setInterval(() => {
       const now = Date.now();
       this.battles.forEach((b, id) => {
@@ -689,11 +697,13 @@ class BattleManager {
       });
     }, 60000);
   }
-}
 
-// ============================================================================
-// MAIN UNIFIED SERVER - ✅ FIXED: Better initialization
-// ============================================================================
+  getStats(): { activeBattles: number } {
+    return {
+      activeBattles: this.battles.size
+    };
+  }
+}
 
 class UnifiedServer {
   private wss: WebSocketServer;
@@ -709,7 +719,23 @@ class UnifiedServer {
     this.messageHandler = new MessageHandler(this.gameManager, this.connectionManager);
     this.battleManager = new BattleManager();
 
-    const server = createServer();
+    const server = createServer((req, res) => {
+      if (req.url === '/health') {
+        const stats = {
+          status: 'healthy',
+          uptime: process.uptime(),
+          connections: this.connectionManager.getStats(),
+          battles: this.battleManager.getStats(),
+          memory: process.memoryUsage()
+        };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(stats));
+      } else {
+        res.writeHead(200, { 'Content-Type': 'text/plain' });
+        res.end('Solana Survivor WebSocket Server');
+      }
+    });
+
     this.wss = new WebSocketServer({ server });
 
     this.gameManager.setGameStateChangeCallback((gameId) => {
@@ -719,11 +745,17 @@ class UnifiedServer {
     this.setupWebSocketServer();
     this.startHealthCheck();
     this.battleManager.startCleanupTimer();
+    this.startStatsLogger();
 
     server.listen(port, () => {
-      console.log(`[Server] 🚀 Unified WebSocket server running on port ${port}`);
-      console.log(`[Server] 📡 Phase 3: ws://localhost:${port}?gameId=X&playerId=Y`);
-      console.log(`[Server] ⚔️  Battles: ws://localhost:${port}/battle?challengeId=X&playerId=Y`);
+      console.log('='.repeat(60));
+      console.log('🚀 Solana Survivor WebSocket Server');
+      console.log('='.repeat(60));
+      console.log(`📡 Port: ${port}`);
+      console.log(`🎮 Phase 3: ws://localhost:${port}?gameId=X&playerId=Y`);
+      console.log(`⚔️  Battles: ws://localhost:${port}/battle?challengeId=X&playerId=Y`);
+      console.log(`❤️  Health: http://localhost:${port}/health`);
+      console.log('='.repeat(60));
     });
   }
 
@@ -737,41 +769,43 @@ class UnifiedServer {
         this.handlePhase3Connection(ws, query);
       }
     });
+
+    this.wss.on('error', (error) => {
+      console.error('[Server] ❌ WebSocket server error:', error);
+    });
   }
 
-  private handleBattleConnection(ws: WebSocket, query: any) {
+  private handleBattleConnection(ws: WebSocket, query: any): void {
     const challengeId = query.challengeId as string;
     const playerId = query.playerId as string;
 
     if (!challengeId || !playerId) {
-      console.error('[Server] ❌ Battle - Invalid parameters');
+      console.error('[Server] ❌ Battle - Missing parameters');
       ws.close(1008, 'Invalid parameters');
       return;
     }
 
-    console.log(`[Server] ⚔️  Battle: ${playerId.slice(0, 8)} -> Challenge ${challengeId}`);
+    console.log(`[Server] ⚔️ Battle connection: ${playerId.slice(0, 8)} → ${challengeId}`);
     this.battleManager.handleConnection(ws, challengeId, playerId);
   }
 
-  private handlePhase3Connection(ws: WebSocket, query: any) {
+  private handlePhase3Connection(ws: WebSocket, query: any): void {
     const gameId = parseInt(query.gameId as string);
     const playerId = query.playerId as string;
 
-    if (!gameId || !playerId) {
+    if (!gameId || !playerId || isNaN(gameId)) {
       console.error('[Server] ❌ Phase 3 - Invalid parameters');
       ws.close(1008, 'Invalid parameters');
       return;
     }
 
-    console.log(`[Server] 🎮 Phase 3: Player ${playerId.slice(0, 8)} -> Game ${gameId}`);
+    console.log(`[Server] 🎮 Phase 3 connection: ${playerId.slice(0, 8)} → Game ${gameId}`);
 
     this.connectionManager.addConnection(ws, playerId, gameId);
     this.gameManager.addPlayer(gameId, playerId);
 
-    // ✅ FIX: Send initial game state immediately
     this.sendInitialGameState(ws, gameId);
 
-    // ✅ FIX: Notify others AFTER sending initial state
     this.connectionManager.broadcastToGame(
       gameId,
       {
@@ -786,12 +820,12 @@ class UnifiedServer {
         const message = JSON.parse(data.toString());
         this.handlePhase3Message(playerId, gameId, message);
       } catch (error) {
-        console.error('[Server] ❌ Error parsing Phase 3 message:', error);
+        console.error('[Server] ❌ Parse error:', error);
       }
     });
 
     ws.on('close', () => {
-      console.log(`[Server] 👋 Phase 3: Player ${playerId.slice(0, 8)} disconnected from game ${gameId}`);
+      console.log(`[Server] 👋 Disconnect: ${playerId.slice(0, 8)} from game ${gameId}`);
 
       this.connectionManager.removeConnection(playerId, gameId);
       this.gameManager.removePlayer(gameId, playerId);
@@ -803,7 +837,7 @@ class UnifiedServer {
     });
 
     ws.on('error', (error) => {
-      console.error(`[Server] ❌ Phase 3 WebSocket error for player ${playerId.slice(0, 8)}:`, error);
+      console.error(`[Server] ❌ WebSocket error for ${playerId.slice(0, 8)}:`, error);
     });
   }
 
@@ -823,7 +857,7 @@ class UnifiedServer {
     const { canStart, readyCount } = this.gameManager.canStartGame(gameId);
 
     if (canStart) {
-      console.log(`[Server] 🚀 Auto-starting game ${gameId} - ${readyCount} players ready`);
+      console.log(`[Server] 🚀 Auto-starting game ${gameId} (${readyCount} ready)`);
 
       setTimeout(() => {
         const result = this.gameManager.startGame(gameId);
@@ -848,10 +882,10 @@ class UnifiedServer {
       return;
     }
 
-    console.log(`[Server] ⏰ Deadline monitor for game ${gameId} - ${Math.round(timeUntilDeadline / 1000)}s`);
+    console.log(`[Server] ⏰ Deadline set for game ${gameId}: ${Math.round(timeUntilDeadline / 1000)}s`);
 
     const timer = setTimeout(() => {
-      console.log(`[Server] ⏰ Deadline expired for game ${gameId}, auto-starting...`);
+      console.log(`[Server] ⏰ Deadline expired for game ${gameId}`);
       this.checkAutoStart(gameId);
     }, timeUntilDeadline);
 
@@ -862,7 +896,6 @@ class UnifiedServer {
     const game = this.gameManager.getGameState(gameId);
     if (!game) return;
 
-    // ✅ FIX: Send game state first
     const stateMessage = {
       type: 'game_state_update',
       gameState: {
@@ -875,11 +908,14 @@ class UnifiedServer {
     };
 
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(stateMessage));
-      console.log(`[Server] 📤 Sent initial game state to new player in game ${gameId}`);
+      try {
+        ws.send(JSON.stringify(stateMessage));
+        console.log(`[Server] 📤 Initial state sent (game ${gameId})`);
+      } catch (error) {
+        console.error('[Server] ❌ Error sending initial state:', error);
+      }
     }
 
-    // ✅ FIX: Send existing players sync
     if (game.players.size > 0) {
       const players = Array.from(game.players.values());
       const syncMessage = {
@@ -888,8 +924,12 @@ class UnifiedServer {
       };
 
       if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify(syncMessage));
-        console.log(`[Server] 📊 Sent player sync: ${players.length} players`);
+        try {
+          ws.send(JSON.stringify(syncMessage));
+          console.log(`[Server] 📊 Player sync sent: ${players.length} players`);
+        } catch (error) {
+          console.error('[Server] ❌ Error sending sync:', error);
+        }
       }
     }
   }
@@ -915,13 +955,40 @@ class UnifiedServer {
       this.connectionManager.checkStaleConnections();
     }, 30000);
 
-    console.log('[Server] ❤️  Health check started');
+    console.log('[Server] ❤️ Health check started (30s interval)');
+  }
+
+  private startStatsLogger(): void {
+    setInterval(() => {
+      const connStats = this.connectionManager.getStats();
+      const battleStats = this.battleManager.getStats();
+
+      if (connStats.totalConnections > 0 || battleStats.activeBattles > 0) {
+        console.log(`[Stats] 👥 Connections: ${connStats.totalConnections} | 🎮 Games: ${connStats.games} | ⚔️ Battles: ${battleStats.activeBattles}`);
+      }
+    }, 60000);
   }
 }
 
-// ============================================================================
-// START SERVER
-// ============================================================================
-
 const PORT = parseInt(process.env.PORT || process.env.WS_PORT || '3001');
+
+process.on('uncaughtException', (error) => {
+  console.error('[Fatal] ❌ Uncaught exception:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[Fatal] ❌ Unhandled rejection at:', promise, 'reason:', reason);
+});
+
+process.on('SIGTERM', () => {
+  console.log('[Server] 🛑 SIGTERM received, shutting down gracefully...');
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  console.log('[Server] 🛑 SIGINT received, shutting down gracefully...');
+  process.exit(0);
+});
+
 new UnifiedServer(PORT);
