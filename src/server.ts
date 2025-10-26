@@ -37,6 +37,8 @@ interface GameSession {
   readyPlayers: Set<string>;
   startTime: number | null;
   winner: string | null;
+  expectedPlayers: number; // ✅ NEW: Track how many players should join
+  hasStarted: boolean;     // ✅ NEW: Prevent multiple starts
 }
 
 interface BattleMove {
@@ -65,7 +67,8 @@ class GameManager {
     this.onGameStateChange = callback;
   }
 
-  getOrCreateGame(gameId: number): GameSession {
+  // ✅ FIX: Add expectedPlayers parameter
+  getOrCreateGame(gameId: number, expectedPlayers?: number): GameSession {
     if (!this.games.has(gameId)) {
       this.games.set(gameId, {
         gameId,
@@ -75,17 +78,26 @@ class GameManager {
         players: new Map(),
         readyPlayers: new Set(),
         startTime: null,
-        winner: null
+        winner: null,
+        expectedPlayers: expectedPlayers || 2, // Default to 2 players
+        hasStarted: false
       });
-      console.log(`[GameManager] ✅ Created game ${gameId}`);
+      console.log(`[GameManager] ✅ Created game ${gameId} (expecting ${expectedPlayers || 2} players)`);
     }
     return this.games.get(gameId)!;
+  }
+
+  // ✅ NEW: Set expected players count (called from frontend)
+  setExpectedPlayers(gameId: number, count: number): void {
+    const game = this.getOrCreateGame(gameId);
+    game.expectedPlayers = count;
+    console.log(`[GameManager] 📊 Game ${gameId} expects ${count} players`);
   }
 
   addPlayer(gameId: number, playerId: string): void {
     const game = this.getOrCreateGame(gameId);
     if (!game.players.has(playerId)) {
-      console.log(`[GameManager] 👤 Player ${playerId.slice(0, 8)} joined game ${gameId}`);
+      console.log(`[GameManager] 👤 Player ${playerId.slice(0, 8)} joined game ${gameId} (${game.players.size + 1}/${game.expectedPlayers})`);
     }
   }
 
@@ -115,13 +127,14 @@ class GameManager {
     const game = this.getOrCreateGame(gameId);
     game.readyPlayers.add(playerId);
 
-    console.log(`[GameManager] ✅ Player ${playerId.slice(0, 8)} ready (${game.readyPlayers.size}/${game.players.size})`);
+    console.log(`[GameManager] ✅ Player ${playerId.slice(0, 8)} ready (${game.readyPlayers.size}/${game.expectedPlayers})`);
 
     if (this.onGameStateChange) {
       this.onGameStateChange(gameId);
     }
   }
 
+  // ✅ FIX: Updated logic to check against expectedPlayers
   canStartGame(gameId: number): { canStart: boolean; reason: string; readyCount: number } {
     const game = this.games.get(gameId);
     if (!game) {
@@ -129,6 +142,11 @@ class GameManager {
     }
 
     const readyCount = game.readyPlayers.size;
+
+    // ✅ FIX: Don't start if already started
+    if (game.hasStarted) {
+      return { canStart: false, reason: 'Game already started', readyCount };
+    }
 
     if (game.phase !== 'waiting') {
       return { canStart: false, reason: `Game already ${game.phase}`, readyCount };
@@ -138,17 +156,29 @@ class GameManager {
       return { canStart: false, reason: 'No players ready', readyCount: 0 };
     }
 
-    if (readyCount === 1) {
-      return { canStart: true, reason: 'Auto-winner (1 player)', readyCount: 1 };
+    // ✅ FIX: Only auto-win if there's genuinely 1 player (not just first to connect)
+    if (game.expectedPlayers === 1 && readyCount === 1) {
+      return { canStart: true, reason: 'Auto-winner (1 expected player)', readyCount: 1 };
     }
 
-    return { canStart: true, reason: `${readyCount} players ready`, readyCount };
+    // ✅ FIX: Wait for ALL expected players to be ready
+    if (readyCount < game.expectedPlayers) {
+      return { canStart: false, reason: `Waiting for ${game.expectedPlayers - readyCount} more players`, readyCount };
+    }
+
+    return { canStart: true, reason: `All ${readyCount} players ready`, readyCount };
   }
 
+  // ✅ FIX: Add guard to prevent multiple starts
   startGame(gameId: number): { success: boolean; message: string; gameState?: GameSession } {
     const game = this.games.get(gameId);
     if (!game) {
       return { success: false, message: 'Game not found' };
+    }
+
+    // ✅ FIX: Prevent duplicate starts
+    if (game.hasStarted) {
+      return { success: false, message: 'Game already started' };
     }
 
     const { canStart, reason, readyCount } = this.canStartGame(gameId);
@@ -157,7 +187,11 @@ class GameManager {
       return { success: false, message: reason };
     }
 
-    if (readyCount === 1) {
+    // ✅ Mark as started IMMEDIATELY to prevent race conditions
+    game.hasStarted = true;
+
+    // Handle single-player auto-win (only if truly expected 1 player)
+    if (game.expectedPlayers === 1 && readyCount === 1) {
       const winnerId = Array.from(game.readyPlayers)[0];
       game.phase = 'ended';
       game.winner = winnerId;
@@ -165,6 +199,7 @@ class GameManager {
       return { success: true, message: 'Auto-winner declared', gameState: game };
     }
 
+    // Normal multi-player game start
     game.phase = 'countdown';
     game.countdownStartTime = Date.now();
 
@@ -257,37 +292,27 @@ class ConnectionManager {
     console.log(`[ConnectionManager] 🔌 Disconnected: ${connectionId}`);
   }
 
-  updateHeartbeat(playerId: string, gameId: number): void {
-    const connectionId = `${gameId}-${playerId}`;
-    const conn = this.connections.get(connectionId);
-    if (conn) {
-      conn.lastHeartbeat = Date.now();
-      conn.isAlive = true;
-    }
+  broadcast(message: any, excludePlayerId?: string): void {
+    const json = JSON.stringify(message);
+    this.connections.forEach((conn, connId) => {
+      if (conn.ws.readyState === WebSocket.OPEN && conn.playerId !== excludePlayerId) {
+        conn.ws.send(json);
+      }
+    });
   }
 
   broadcastToGame(gameId: number, message: any, excludePlayerId?: string): void {
+    const json = JSON.stringify(message);
     const gameConns = this.gameConnections.get(gameId);
+
     if (!gameConns) return;
 
-    const messageStr = JSON.stringify(message);
-    let sentCount = 0;
-
-    gameConns.forEach(connectionId => {
-      const conn = this.connections.get(connectionId);
-      if (conn && conn.playerId !== excludePlayerId && conn.ws.readyState === WebSocket.OPEN) {
-        try {
-          conn.ws.send(messageStr);
-          sentCount++;
-        } catch (error) {
-          console.error(`[ConnectionManager] ❌ Send error to ${conn.playerId.slice(0, 8)}:`, error);
-        }
+    gameConns.forEach(connId => {
+      const conn = this.connections.get(connId);
+      if (conn && conn.ws.readyState === WebSocket.OPEN && conn.playerId !== excludePlayerId) {
+        conn.ws.send(json);
       }
     });
-
-    if (message.type !== 'heartbeat_ack' && message.type !== 'player_state_update') {
-      console.log(`[ConnectionManager] 📡 Broadcast ${message.type} to ${sentCount} players in game ${gameId}`);
-    }
   }
 
   sendToPlayer(playerId: string, gameId: number, message: any): void {
@@ -295,47 +320,37 @@ class ConnectionManager {
     const conn = this.connections.get(connectionId);
 
     if (conn && conn.ws.readyState === WebSocket.OPEN) {
-      try {
-        conn.ws.send(JSON.stringify(message));
-      } catch (error) {
-        console.error(`[ConnectionManager] ❌ Send error to ${playerId.slice(0, 8)}:`, error);
-      }
+      conn.ws.send(JSON.stringify(message));
     }
   }
 
-  getGamePlayerIds(gameId: number): string[] {
-    const gameConns = this.gameConnections.get(gameId);
-    if (!gameConns) return [];
+  updateHeartbeat(playerId: string, gameId: number): void {
+    const connectionId = `${gameId}-${playerId}`;
+    const conn = this.connections.get(connectionId);
 
-    return Array.from(gameConns)
-      .map(connectionId => {
-        const conn = this.connections.get(connectionId);
-        return conn?.playerId;
-      })
-      .filter(Boolean) as string[];
+    if (conn) {
+      conn.lastHeartbeat = Date.now();
+      conn.isAlive = true;
+    }
   }
 
-  checkStaleConnections(): void {
+  checkDeadConnections(): void {
     const now = Date.now();
-    const staleThreshold = 60000;
+    const timeout = 60000; // 60 seconds
 
-    this.connections.forEach((conn, connectionId) => {
-      if (now - conn.lastHeartbeat > staleThreshold) {
-        console.log(`[ConnectionManager] ⚠️ Stale connection: ${connectionId}`);
-
-        if (conn.ws.readyState === WebSocket.OPEN) {
-          conn.ws.close();
-        }
-
-        this.removeConnection(conn.playerId, conn.gameId);
+    this.connections.forEach((conn, connId) => {
+      if (now - conn.lastHeartbeat > timeout) {
+        console.log(`[ConnectionManager] ⚠️ Dead connection: ${connId}`);
+        conn.ws.terminate();
+        this.connections.delete(connId);
       }
     });
   }
 
-  getStats(): { totalConnections: number; games: number } {
+  getStats(): { totalConnections: number; activeGames: number } {
     return {
       totalConnections: this.connections.size,
-      games: this.gameConnections.size
+      activeGames: this.gameConnections.size
     };
   }
 }
@@ -347,152 +362,80 @@ class MessageHandler {
   ) { }
 
   handleMessage(playerId: string, gameId: number, message: any): void {
-    const shortId = playerId.slice(0, 8);
+    switch (message.type) {
+      case 'heartbeat':
+        this.connectionManager.updateHeartbeat(playerId, gameId);
+        this.connectionManager.sendToPlayer(playerId, gameId, { type: 'heartbeat_ack' });
+        break;
 
-    if (message.type !== 'heartbeat' && message.type !== 'player_state_update') {
-      console.log(`[MessageHandler] 📨 ${message.type} from ${shortId} (game ${gameId})`);
+      case 'mark_ready':
+        this.gameManager.markPlayerReady(gameId, playerId);
+        this.connectionManager.broadcastToGame(gameId, {
+          type: 'player_ready',
+          playerId
+        });
+        break;
+
+      case 'player_update':
+        if (message.state) {
+          this.gameManager.updatePlayerState(gameId, playerId, message.state);
+          this.connectionManager.broadcastToGame(
+            gameId,
+            {
+              type: 'player_update',
+              playerId,
+              state: message.state
+            },
+            playerId
+          );
+        }
+        break;
+
+      case 'player_eliminated':
+        this.connectionManager.broadcastToGame(gameId, {
+          type: 'player_eliminated',
+          playerId
+        });
+
+        const game = this.gameManager.getGameState(gameId);
+        if (game) {
+          const alivePlayers = Array.from(game.players.values()).filter(p => p.alive);
+          if (alivePlayers.length === 1) {
+            this.gameManager.declareWinner(gameId, alivePlayers[0].id);
+            this.connectionManager.broadcastToGame(gameId, {
+              type: 'winner_declared',
+              winnerId: alivePlayers[0].id
+            });
+          }
+        }
+        break;
+
+      case 'request_sync':
+        const gameState = this.gameManager.getGameState(gameId);
+        if (gameState) {
+          this.connectionManager.sendToPlayer(playerId, gameId, {
+            type: 'sync',
+            players: Array.from(gameState.players.values())
+          });
+        }
+        break;
+
+      // ✅ NEW: Handle expected players count from frontend
+      case 'set_expected_players':
+        if (message.count && typeof message.count === 'number') {
+          this.gameManager.setExpectedPlayers(gameId, message.count);
+        }
+        break;
+
+      default:
+        console.log(`[MessageHandler] ⚠️ Unknown message type: ${message.type}`);
     }
-
-    try {
-      switch (message.type) {
-        case 'heartbeat':
-          this.handleHeartbeat(playerId, gameId);
-          break;
-
-        case 'mark_ready':
-          this.handleMarkReady(playerId, gameId);
-          break;
-
-        case 'player_state_update':
-          this.handlePlayerStateUpdate(playerId, gameId, message.state);
-          break;
-
-        case 'start_game':
-          this.handleStartGame(playerId, gameId);
-          break;
-
-        case 'player_eliminated':
-          this.handlePlayerEliminated(playerId, gameId);
-          break;
-
-        case 'declare_winner':
-          this.handleDeclareWinner(playerId, gameId, message.winnerId);
-          break;
-
-        case 'request_sync':
-          this.handleRequestSync(playerId, gameId);
-          break;
-
-        default:
-          console.warn(`[MessageHandler] ⚠️ Unknown type: ${message.type}`);
-      }
-    } catch (error) {
-      console.error(`[MessageHandler] ❌ Error handling ${message.type}:`, error);
-    }
-  }
-
-  private handleHeartbeat(playerId: string, gameId: number): void {
-    this.connectionManager.updateHeartbeat(playerId, gameId);
-    this.connectionManager.sendToPlayer(playerId, gameId, { type: 'heartbeat_ack' });
-  }
-
-  private handleMarkReady(playerId: string, gameId: number): void {
-    this.gameManager.markPlayerReady(gameId, playerId);
-
-    this.connectionManager.broadcastToGame(gameId, {
-      type: 'player_ready',
-      playerId
-    });
-  }
-
-  private handlePlayerStateUpdate(playerId: string, gameId: number, state: PlayerState): void {
-    if (!state || !state.id) {
-      console.warn(`[MessageHandler] ⚠️ Invalid state from ${playerId.slice(0, 8)}`);
-      return;
-    }
-
-    this.gameManager.updatePlayerState(gameId, playerId, state);
-
-    this.connectionManager.broadcastToGame(
-      gameId,
-      {
-        type: 'player_state_update',
-        playerId,
-        state
-      },
-      playerId
-    );
-  }
-
-  private handleStartGame(playerId: string, gameId: number): void {
-    const result = this.gameManager.startGame(gameId);
-
-    if (result.success) {
-      this.connectionManager.broadcastToGame(gameId, {
-        type: 'game_started',
-        gameState: result.gameState
-      });
-    } else {
-      this.connectionManager.sendToPlayer(playerId, gameId, {
-        type: 'game_start_failed',
-        reason: result.message
-      });
-    }
-  }
-
-  private handlePlayerEliminated(playerId: string, gameId: number): void {
-    const game = this.gameManager.getGameState(gameId);
-    if (!game) return;
-
-    const playerState = game.players.get(playerId);
-    if (playerState) {
-      playerState.alive = false;
-      this.gameManager.updatePlayerState(gameId, playerId, playerState);
-    }
-
-    console.log(`[MessageHandler] 💀 Player ${playerId.slice(0, 8)} eliminated`);
-
-    this.connectionManager.broadcastToGame(gameId, {
-      type: 'player_eliminated',
-      playerId
-    });
-
-    const alivePlayers = Array.from(game.players.values()).filter(p => p.alive);
-    if (alivePlayers.length === 1) {
-      this.handleDeclareWinner(playerId, gameId, alivePlayers[0].id);
-    } else if (alivePlayers.length === 0) {
-      console.warn(`[MessageHandler] ⚠️ No survivors in game ${gameId}`);
-    }
-  }
-
-  private handleDeclareWinner(playerId: string, gameId: number, winnerId: string): void {
-    this.gameManager.declareWinner(gameId, winnerId);
-
-    console.log(`[MessageHandler] 🏆 Winner declared: ${winnerId.slice(0, 8)}`);
-
-    this.connectionManager.broadcastToGame(gameId, {
-      type: 'winner_declared',
-      winnerId
-    });
-  }
-
-  private handleRequestSync(playerId: string, gameId: number): void {
-    const game = this.gameManager.getGameState(gameId);
-    if (!game) return;
-
-    const players = Array.from(game.players.values()).filter(p => p.id !== playerId);
-
-    this.connectionManager.sendToPlayer(playerId, gameId, {
-      type: 'sync',
-      players
-    });
-
-    console.log(`[MessageHandler] 📊 Sync sent to ${playerId.slice(0, 8)}: ${players.length} players`);
   }
 }
 
 class BattleManager {
   private battles: Map<string, BattleSession> = new Map();
+  private cleanupInterval: NodeJS.Timeout | null = null;
 
   handleConnection(ws: WebSocket, challengeId: string, playerId: string): void {
     let battle = this.battles.get(challengeId);
@@ -649,30 +592,27 @@ class BattleManager {
       playerId: pid
     });
 
-    if (battle.connections.size === 0) {
+    if (battle.players.size === 0) {
       this.cleanup(id);
     }
   }
 
-  private sendTo(ws: WebSocket, msg: any): void {
-    if (ws.readyState === WebSocket.OPEN) {
-      try {
-        ws.send(JSON.stringify(msg));
-      } catch (error) {
-        console.error('[BattleManager] ❌ Send error:', error);
-      }
-    }
-  }
-
-  private broadcastToBattle(id: string, msg: any, exclude?: string): void {
+  private broadcastToBattle(id: string, msg: any, excludePid?: string): void {
     const battle = this.battles.get(id);
     if (!battle) return;
 
+    const json = JSON.stringify(msg);
     battle.connections.forEach((ws, pid) => {
-      if (pid !== exclude) {
-        this.sendTo(ws, msg);
+      if (ws.readyState === WebSocket.OPEN && pid !== excludePid) {
+        ws.send(json);
       }
     });
+  }
+
+  private sendTo(ws: WebSocket, msg: any): void {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(msg));
+    }
   }
 
   private cleanup(id: string): void {
@@ -680,22 +620,27 @@ class BattleManager {
     if (!battle) return;
 
     battle.connections.forEach(ws => {
-      if (ws.readyState === WebSocket.OPEN) ws.close();
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.close();
+      }
     });
 
     this.battles.delete(id);
-    console.log(`[BattleManager] 🧹 Cleaned up battle: ${id}`);
+    console.log(`[BattleManager] 🗑️ Cleaned up battle: ${id}`);
   }
 
   startCleanupTimer(): void {
-    setInterval(() => {
+    this.cleanupInterval = setInterval(() => {
       const now = Date.now();
-      this.battles.forEach((b, id) => {
-        if (now - b.createdAt > 1800000 && b.status !== 'in_progress') {
+      const timeout = 300000; // 5 minutes
+
+      this.battles.forEach((battle, id) => {
+        if (now - battle.createdAt > timeout && battle.status !== 'in_progress') {
+          console.log(`[BattleManager] 🧹 Cleaning stale battle: ${id}`);
           this.cleanup(id);
         }
       });
-    }, 60000);
+    }, 60000); // Check every minute
   }
 
   getStats(): { activeBattles: number } {
@@ -847,25 +792,40 @@ class UnifiedServer {
     } else {
       this.messageHandler.handleMessage(playerId, gameId, message);
 
+      // ✅ FIX: Only check auto-start after ready, NOT on every message
       if (message.type === 'mark_ready') {
         this.checkAutoStart(gameId);
       }
     }
   }
 
+  // ✅ FIX: checkAutoStart now properly handles race conditions
   private checkAutoStart(gameId: number): void {
-    const { canStart, readyCount } = this.gameManager.canStartGame(gameId);
+    const game = this.gameManager.getGameState(gameId);
 
-    if (canStart) {
-      console.log(`[Server] 🚀 Auto-starting game ${gameId} (${readyCount} ready)`);
-
-      setTimeout(() => {
-        const result = this.gameManager.startGame(gameId);
-        if (result.success) {
-          this.broadcastGameState(gameId);
-        }
-      }, 1000);
+    // ✅ Prevent multiple calls
+    if (!game || game.hasStarted) {
+      return;
     }
+
+    const { canStart, readyCount, reason } = this.gameManager.canStartGame(gameId);
+
+    if (!canStart) {
+      console.log(`[Server] ⏸️ Not starting game ${gameId}: ${reason}`);
+      return;
+    }
+
+    console.log(`[Server] 🚀 Auto-starting game ${gameId} (${readyCount}/${game.expectedPlayers} ready)`);
+
+    // ✅ Add slight delay to ensure all clients are synced
+    setTimeout(() => {
+      const result = this.gameManager.startGame(gameId);
+      if (result.success) {
+        this.broadcastGameState(gameId);
+      } else {
+        console.log(`[Server] ⚠️ Failed to start game ${gameId}: ${result.message}`);
+      }
+    }, 1000);
   }
 
   private startDeadlineMonitor(gameId: number, deadline: number): void {
@@ -898,39 +858,15 @@ class UnifiedServer {
 
     const stateMessage = {
       type: 'game_state_update',
-      gameState: {
-        phase: game.phase,
-        countdownStartTime: game.countdownStartTime,
-        countdownDuration: game.countdownDuration,
-        readyPlayers: game.readyPlayers.size,
-        totalPlayers: this.connectionManager.getGamePlayerIds(gameId).length
-      }
+      phase: game.phase,
+      players: Array.from(game.players.values()),
+      readyPlayers: Array.from(game.readyPlayers),
+      countdownStartTime: game.countdownStartTime,
+      countdownDuration: game.countdownDuration
     };
 
     if (ws.readyState === WebSocket.OPEN) {
-      try {
-        ws.send(JSON.stringify(stateMessage));
-        console.log(`[Server] 📤 Initial state sent (game ${gameId})`);
-      } catch (error) {
-        console.error('[Server] ❌ Error sending initial state:', error);
-      }
-    }
-
-    if (game.players.size > 0) {
-      const players = Array.from(game.players.values());
-      const syncMessage = {
-        type: 'sync',
-        players
-      };
-
-      if (ws.readyState === WebSocket.OPEN) {
-        try {
-          ws.send(JSON.stringify(syncMessage));
-          console.log(`[Server] 📊 Player sync sent: ${players.length} players`);
-        } catch (error) {
-          console.error('[Server] ❌ Error sending sync:', error);
-        }
-      }
+      ws.send(JSON.stringify(stateMessage));
     }
   }
 
@@ -938,57 +874,55 @@ class UnifiedServer {
     const game = this.gameManager.getGameState(gameId);
     if (!game) return;
 
-    this.connectionManager.broadcastToGame(gameId, {
-      type: 'game_state_update',
-      gameState: {
-        phase: game.phase,
-        countdownStartTime: game.countdownStartTime,
-        countdownDuration: game.countdownDuration,
-        readyPlayers: game.readyPlayers.size,
-        totalPlayers: this.connectionManager.getGamePlayerIds(gameId).length
-      }
-    });
+    const stateMessage = {
+      type: 'game_phase_change',
+      phase: game.phase,
+      countdownStartTime: game.countdownStartTime,
+      countdownDuration: game.countdownDuration
+    };
+
+    this.connectionManager.broadcastToGame(gameId, stateMessage);
+
+    if (game.phase === 'countdown') {
+      this.connectionManager.broadcastToGame(gameId, {
+        type: 'countdown_sync',
+        startTime: game.countdownStartTime,
+        duration: game.countdownDuration
+      });
+    }
+
+    if (game.phase === 'active') {
+      this.connectionManager.broadcastToGame(gameId, {
+        type: 'game_start'
+      });
+    }
+
+    if (game.phase === 'ended' && game.winner) {
+      this.connectionManager.broadcastToGame(gameId, {
+        type: 'winner_declared',
+        winnerId: game.winner
+      });
+    }
   }
 
   private startHealthCheck(): void {
     setInterval(() => {
-      this.connectionManager.checkStaleConnections();
-    }, 30000);
-
-    console.log('[Server] ❤️ Health check started (30s interval)');
+      this.connectionManager.checkDeadConnections();
+    }, 30000); // Every 30 seconds
   }
 
   private startStatsLogger(): void {
     setInterval(() => {
       const connStats = this.connectionManager.getStats();
       const battleStats = this.battleManager.getStats();
-
-      if (connStats.totalConnections > 0 || battleStats.activeBattles > 0) {
-        console.log(`[Stats] 👥 Connections: ${connStats.totalConnections} | 🎮 Games: ${connStats.games} | ⚔️ Battles: ${battleStats.activeBattles}`);
-      }
-    }, 60000);
+      console.log(`📊 Stats - Connections: ${connStats.totalConnections}, Games: ${connStats.activeGames}, Battles: ${battleStats.activeBattles}`);
+    }, 60000); // Every minute
   }
 }
 
-const PORT = parseInt(process.env.PORT || process.env.WS_PORT || '3001');
+// ============================================================================
+// START SERVER
+// ============================================================================
 
-process.on('uncaughtException', (error) => {
-  console.error('[Fatal] ❌ Uncaught exception:', error);
-  process.exit(1);
-});
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('[Fatal] ❌ Unhandled rejection at:', promise, 'reason:', reason);
-});
-
-process.on('SIGTERM', () => {
-  console.log('[Server] 🛑 SIGTERM received, shutting down gracefully...');
-  process.exit(0);
-});
-
-process.on('SIGINT', () => {
-  console.log('[Server] 🛑 SIGINT received, shutting down gracefully...');
-  process.exit(0);
-});
-
+const PORT = parseInt(process.env.PORT || '3001');
 new UnifiedServer(PORT);
