@@ -1,4 +1,4 @@
-// src/server/WebSocketServer.ts - WebSocket Connection Management
+// src/server/WebSocketServer.ts - WebSocket Connection Management (FIXED)
 
 import WebSocket, { WebSocketServer as WSServer } from 'ws';
 import { IncomingMessage } from 'http';
@@ -14,6 +14,7 @@ interface ClientConnection {
     walletAddress: string;
     isAlive: boolean;
     lastPing: number;
+    hasJoined: boolean; // ✅ NEW: Track if player sent join message
 }
 
 export class WebSocketServer {
@@ -52,6 +53,7 @@ export class WebSocketServer {
 
     /**
      * Handle new WebSocket connection
+     * ✅ FIXED: Don't add player immediately, wait for 'join' message with vsolBalance
      */
     private handleConnection(ws: WebSocket, request: IncomingMessage): void {
         try {
@@ -68,9 +70,7 @@ export class WebSocketServer {
             }
 
             // For now, use playerId as wallet address
-            // In production, verify wallet signature
             const walletAddress = playerId;
-            const vsolBalance = 1000; // Get from blockchain in production
 
             this.log.info('New connection', {
                 gameId,
@@ -78,29 +78,16 @@ export class WebSocketServer {
                 ip: request.socket.remoteAddress
             });
 
-            // Add to room
-            const result = this.roomManager.addPlayerToRoom(
-                gameId,
-                playerId,
-                walletAddress,
-                vsolBalance,
-                ws
-            );
-
-            if (!result.success) {
-                this.sendError(ws, result.error || 'Failed to join game');
-                ws.close(1008, result.error);
-                return;
-            }
-
-            // Store connection info
+            // ✅ Store connection info BUT DON'T ADD TO ROOM YET
+            // Wait for 'join' message with vsolBalance
             const clientInfo: ClientConnection = {
                 ws,
                 gameId,
                 playerId,
                 walletAddress,
                 isAlive: true,
-                lastPing: Date.now()
+                lastPing: Date.now(),
+                hasJoined: false // ✅ NEW: Not joined yet
             };
 
             this.clients.set(ws, clientInfo);
@@ -111,6 +98,12 @@ export class WebSocketServer {
             ws.on('error', (error) => this.handleError(ws, error));
             ws.on('pong', () => this.handlePong(ws));
 
+            // ✅ Send acknowledgment that connection is established
+            this.send(ws, {
+                type: 'connected',
+                message: 'Connected. Please send join message with vsolBalance.'
+            });
+
         } catch (error: any) {
             this.log.error('Connection setup failed', { error: error.message });
             ws.close(1011, 'Internal error');
@@ -119,6 +112,7 @@ export class WebSocketServer {
 
     /**
      * Handle incoming message
+     * ✅ FIXED: Process 'join' message to add player to room with vsolBalance
      */
     private handleMessage(ws: WebSocket, data: WebSocket.Data): void {
         const client = this.clients.get(ws);
@@ -128,6 +122,11 @@ export class WebSocketServer {
             const message: WSMessage = JSON.parse(data.toString());
 
             switch (message.type) {
+                case 'join':
+                    // ✅ NEW: Handle join message with vsolBalance
+                    this.handleJoin(ws, client, message);
+                    break;
+
                 case 'ping':
                     this.send(ws, { type: 'pong' });
                     break;
@@ -137,6 +136,10 @@ export class WebSocketServer {
                     break;
 
                 case 'player:update':
+                    if (!client.hasJoined) {
+                        this.sendError(ws, 'Must join first');
+                        return;
+                    }
                     const room = this.roomManager.getRoom(client.gameId);
                     if (room && message.state) {
                         room.updatePlayer(client.playerId, message.state);
@@ -144,6 +147,10 @@ export class WebSocketServer {
                     break;
 
                 case 'player:ready':
+                    if (!client.hasJoined) {
+                        this.sendError(ws, 'Must join first');
+                        return;
+                    }
                     const readyRoom = this.roomManager.getRoom(client.gameId);
                     if (readyRoom) {
                         readyRoom.markPlayerReady(client.playerId);
@@ -167,7 +174,62 @@ export class WebSocketServer {
     }
 
     /**
+     * ✅ NEW: Handle 'join' message - Add player to room with vsolBalance
+     */
+    private handleJoin(ws: WebSocket, client: ClientConnection, message: WSMessage): void {
+        if (client.hasJoined) {
+            this.log.warn('Player already joined', { playerId: client.playerId.slice(0, 8) });
+            return;
+        }
+
+        // ✅ Extract vsolBalance from message
+        const vsolBalance = message.vsolBalance || 0;
+
+        if (vsolBalance <= 0) {
+            this.sendError(ws, 'Invalid vsolBalance');
+            ws.close(1008, 'Invalid vsolBalance');
+            return;
+        }
+
+        this.log.info('Player joining', {
+            playerId: client.playerId.slice(0, 8),
+            gameId: client.gameId,
+            vsolBalance: (vsolBalance / 1e9).toFixed(2) + ' SOL'
+        });
+
+        // ✅ Add player to room with REAL vsolBalance
+        const result = this.roomManager.addPlayerToRoom(
+            client.gameId,
+            client.playerId,
+            client.walletAddress,
+            vsolBalance,
+            ws
+        );
+
+        if (!result.success) {
+            this.sendError(ws, result.error || 'Failed to join game');
+            ws.close(1008, result.error);
+            return;
+        }
+
+        // ✅ Mark as joined
+        client.hasJoined = true;
+
+        this.log.info('Player joined successfully', {
+            playerId: client.playerId.slice(0, 8),
+            gameId: client.gameId
+        });
+
+        // ✅ Send success confirmation
+        this.send(ws, {
+            type: 'joined',
+            message: 'Successfully joined game'
+        });
+    }
+
+    /**
      * Handle connection close
+     * ✅ ALREADY CORRECT: Keeps player in room for reconnection
      */
     private handleClose(ws: WebSocket): void {
         const client = this.clients.get(ws);
@@ -175,10 +237,24 @@ export class WebSocketServer {
 
         this.log.info('Connection closed', {
             playerId: client.playerId.slice(0, 8),
-            gameId: client.gameId
+            gameId: client.gameId,
+            hadJoined: client.hasJoined
         });
 
-        this.roomManager.removePlayerFromRoom(client.gameId, client.playerId);
+        // Get room to check phase
+        const room = this.roomManager.getRoom(client.gameId);
+        
+        // Only remove player if game is ended OR player never joined
+        if (!room || room.getPhase() === 'ended' || !client.hasJoined) {
+            this.roomManager.removePlayerFromRoom(client.gameId, client.playerId);
+        } else {
+            // ✅ Keep player in room for reconnection
+            this.log.info('Player disconnected - allowing reconnection', {
+                playerId: client.playerId.slice(0, 8),
+                phase: room.getPhase()
+            });
+        }
+        
         this.clients.delete(ws);
     }
 
