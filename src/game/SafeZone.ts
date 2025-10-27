@@ -114,7 +114,7 @@ export class SafeZone {
         if (this.state.shrinking) {
             const shrinkSpeed = 0.5; // Units per millisecond
             const shrinkAmount = shrinkSpeed * deltaTime;
-            
+
             if (this.state.radius > this.state.targetRadius) {
                 this.state.radius = Math.max(
                     this.state.targetRadius,
@@ -124,7 +124,7 @@ export class SafeZone {
             } else {
                 this.state.shrinking = false;
                 this.state.nextShrinkAt = now + this.config.shrinkInterval;
-                
+
                 logger.info('SafeZone shrink complete', {
                     radius: this.state.radius,
                     nextShrink: new Date(this.state.nextShrinkAt).toISOString()

@@ -243,7 +243,7 @@ export class WebSocketServer {
 
         // Get room to check phase
         const room = this.roomManager.getRoom(client.gameId);
-        
+
         // Only remove player if game is ended OR player never joined
         if (!room || room.getPhase() === 'ended' || !client.hasJoined) {
             this.roomManager.removePlayerFromRoom(client.gameId, client.playerId);
@@ -254,7 +254,7 @@ export class WebSocketServer {
                 phase: room.getPhase()
             });
         }
-        
+
         this.clients.delete(ws);
     }
 
@@ -263,7 +263,7 @@ export class WebSocketServer {
      */
     private handleError(ws: WebSocket, error: Error): void {
         const client = this.clients.get(ws);
-        
+
         this.log.error('Connection error', {
             error: error.message,
             playerId: client?.playerId?.slice(0, 8)

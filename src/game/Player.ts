@@ -16,27 +16,27 @@ export class Player {
             id,
             walletAddress,
             username: walletAddress.slice(0, 8),
-            
+
             // Position
             x: spawnPosition.x,
             y: spawnPosition.y,
             velocityX: 0,
             velocityY: 0,
             rotation: 0,
-            
+
             // Stats
             hp: 100,
             maxHp: 100,
             vsolBalance,
             score: 0,
             kills: 0,
-            
+
             // Status
             ready: false,
             eliminated: false,
             isAlive: true,
             isInSafeZone: true,
-            
+
             // Timestamps
             joinedAt: Date.now(),
             lastUpdate: Date.now()
@@ -107,7 +107,7 @@ export class Player {
         if (update.velocityX !== undefined) this.state.velocityX = update.velocityX;
         if (update.velocityY !== undefined) this.state.velocityY = update.velocityY;
         if (update.rotation !== undefined) this.state.rotation = update.rotation;
-        
+
         this.state.lastUpdate = Date.now();
     }
 
@@ -133,7 +133,7 @@ export class Player {
      */
     heal(amount: number): void {
         if (!this.state.isAlive) return;
-        
+
         this.state.hp = Math.min(this.state.maxHp, this.state.hp + amount);
         this.state.lastUpdate = Date.now();
     }

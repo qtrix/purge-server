@@ -26,7 +26,7 @@ export class CollisionSystem {
         if (!this.config.enabled) return;
 
         const alivePlayers = players.filter(p => p.isAlive());
-        
+
         // Simple approach for up to 100 players
         // For more optimization, implement spatial hashing/quadtree
         for (let i = 0; i < alivePlayers.length; i++) {
@@ -54,7 +54,7 @@ export class CollisionSystem {
 
             // Separate players (each moves half the overlap)
             const separation = overlap / 2;
-            
+
             const newPosA = Vec2.subtract(posA, Vec2.multiply(direction, separation));
             const newPosB = Vec2.add(posB, Vec2.multiply(direction, separation));
 
@@ -63,7 +63,7 @@ export class CollisionSystem {
 
             // Apply push force (elastic collision)
             const force = this.config.pushForce * (overlap / this.config.playerRadius);
-            
+
             playerA.applyPushForce(
                 Vec2.multiply(direction, -1),
                 force
@@ -80,7 +80,7 @@ export class CollisionSystem {
      */
     checkPlayerCollision(player: Player, otherPlayers: Player[]): boolean {
         const playerPos = player.getPosition();
-        
+
         for (const other of otherPlayers) {
             if (other.getId() === player.getId() || !other.isAlive()) {
                 continue;
@@ -88,7 +88,7 @@ export class CollisionSystem {
 
             const otherPos = other.getPosition();
             const distance = Vec2.distance(playerPos, otherPos);
-            
+
             if (distance < this.config.playerRadius * 2) {
                 return true;
             }
@@ -125,7 +125,7 @@ export class CollisionSystem {
     getPlayersInRange(position: Vector2D, players: Player[], range: number): Player[] {
         return players.filter(player => {
             if (!player.isAlive()) return false;
-            
+
             const playerPos = player.getPosition();
             return Vec2.distance(position, playerPos) <= range;
         });
@@ -136,9 +136,9 @@ export class CollisionSystem {
      */
     applyDamping(player: Player, deltaTime: number): void {
         const state = player.getState();
-        
+
         const dampingFactor = Math.pow(this.config.damping, deltaTime / 16.67); // Normalized to 60fps
-        
+
         const newVx = state.velocityX * dampingFactor;
         const newVy = state.velocityY * dampingFactor;
 
@@ -155,11 +155,11 @@ export class CollisionSystem {
      */
     updatePosition(player: Player, deltaTime: number): void {
         const state = player.getState();
-        
+
         // Update position based on velocity
         const newX = state.x + state.velocityX * (deltaTime / 16.67);
         const newY = state.y + state.velocityY * (deltaTime / 16.67);
-        
+
         player.updatePosition(newX, newY);
     }
 

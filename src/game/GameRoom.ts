@@ -3,10 +3,10 @@
 import { Player } from './Player';
 import { SafeZone } from './SafeZone';
 import { CollisionSystem } from './CollisionSystem';
-import { 
-    GameConfig, 
-    GamePhase, 
-    PlayerState, 
+import {
+    GameConfig,
+    GamePhase,
+    PlayerState,
     SafeZoneState,
     Vector2D,
     WSMessage
@@ -19,25 +19,25 @@ export class GameRoom {
     private gameId: string;
     private config: GameConfig;
     private phase: GamePhase;
-    
+
     private players: Map<string, Player>;
     private connections: Map<string, WebSocket>;
-    
+
     private safeZone: SafeZone;
     private collisionSystem: CollisionSystem;
-    
+
     // Timing
     private createdAt: number;
     private waitingEndsAt: number;
     private countdownStartedAt?: number;
     private gameStartedAt?: number;
     private gameEndedAt?: number;
-    
+
     // Game loop
     private gameLoopInterval?: NodeJS.Timeout;
     private readonly TICK_RATE = 60; // 60 ticks per second
     private lastTickTime: number;
-    
+
     private winner?: string;
     private log: ReturnType<typeof logger.child>;
 
@@ -45,14 +45,14 @@ export class GameRoom {
         this.gameId = gameId;
         this.config = config;
         this.phase = 'waiting';
-        
+
         this.players = new Map();
         this.connections = new Map();
-        
+
         this.createdAt = Date.now();
         this.waitingEndsAt = this.createdAt + config.waitingDuration;
         this.lastTickTime = Date.now();
-        
+
         // Initialize systems
         this.safeZone = new SafeZone(
             config.mapWidth,
@@ -62,14 +62,14 @@ export class GameRoom {
             config.safeZoneShrinkInterval,
             config.safeZoneDamagePerSecond
         );
-        
+
         this.collisionSystem = new CollisionSystem({
             playerRadius: config.playerRadius,
             pushForce: config.pushForce,
             damping: config.collisionDamping,
             enabled: config.enableCollision
         });
-        
+
         this.log = logger.child(`Game-${gameId}`);
         this.log.info('GameRoom created', {
             maxPlayers: config.maxPlayers,
@@ -80,12 +80,39 @@ export class GameRoom {
     // ==================== Player Management ====================
 
     /**
-     * Add player to game room
+     * Add player to game room (with reconnection support)
      */
     addPlayer(playerId: string, walletAddress: string, vsolBalance: number, ws: WebSocket): boolean {
+        // Check if player already exists (reconnection scenario)
         if (this.players.has(playerId)) {
-            this.log.warn('Player already exists', { playerId });
-            return false;
+            const existingPlayer = this.players.get(playerId)!;
+
+            // Allow reconnection if player is still alive or game is in waiting/countdown
+            if (this.phase === 'waiting' || this.phase === 'countdown' || existingPlayer.isAlive()) {
+                this.log.info('Player reconnecting', {
+                    playerId: playerId.slice(0, 8),
+                    phase: this.phase,
+                    alive: existingPlayer.isAlive()
+                });
+
+                // Update connection
+                this.connections.set(playerId, ws);
+
+                // Send full sync to reconnected player
+                this.sendSync(playerId);
+
+                // Notify others of reconnection
+                this.broadcast({
+                    type: 'player:connected',
+                    playerId,
+                    state: existingPlayer.toJSON()
+                }, playerId);
+
+                return true;
+            } else {
+                this.log.warn('Player already exists and is eliminated', { playerId });
+                return false;
+            }
         }
 
         if (this.players.size >= this.config.maxPlayers) {
@@ -163,7 +190,7 @@ export class GameRoom {
         if (!player) return;
 
         player.setReady(true);
-        
+
         this.log.info('Player ready', {
             playerId: playerId.slice(0, 8),
             readyCount: this.getReadyCount()
@@ -345,12 +372,12 @@ export class GameRoom {
                 const damage = this.safeZone.calculateDamage(deltaTime);
                 if (damage > 0) {
                     const died = player.takeDamage(damage);
-                    
+
                     if (died) {
                         this.log.info('Player eliminated by safe zone', {
                             playerId: player.getId().slice(0, 8)
                         });
-                        
+
                         this.broadcast({
                             type: 'player:eliminated',
                             playerId: player.getId(),
@@ -437,7 +464,7 @@ export class GameRoom {
     private broadcastPlayerUpdates(): void {
         const now = Date.now();
         if (now - this.lastBroadcastTime < 50) return; // 20 updates/sec
-        
+
         this.lastBroadcastTime = now;
 
         this.players.forEach((player, playerId) => {
@@ -501,10 +528,10 @@ export class GameRoom {
 
     getCountdownRemaining(): number | null {
         if (!this.countdownStartedAt) return null;
-        
+
         const elapsed = Date.now() - this.countdownStartedAt;
         const remaining = this.config.countdownDuration - elapsed;
-        
+
         return Math.max(0, Math.ceil(remaining / 1000));
     }
 
@@ -517,8 +544,8 @@ export class GameRoom {
     }
 
     canJoin(): boolean {
-        return (this.phase === 'waiting' || this.phase === 'countdown') && 
-               this.players.size < this.config.maxPlayers;
+        return (this.phase === 'waiting' || this.phase === 'countdown') &&
+            this.players.size < this.config.maxPlayers;
     }
 
     /**

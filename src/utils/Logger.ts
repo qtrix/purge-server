@@ -20,11 +20,11 @@ class Logger {
         const timestamp = new Date().toISOString();
         const prefix = this.prefix ? `[${this.prefix}]` : '';
         let output = `${timestamp} ${level} ${prefix} ${message}`;
-        
+
         if (data) {
             output += ` ${JSON.stringify(data)}`;
         }
-        
+
         return output;
     }
 

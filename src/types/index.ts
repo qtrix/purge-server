@@ -1,174 +1,206 @@
-// src/types/index.ts - Type Definitions (UPDATED with new message types)
-
-import WebSocket from 'ws';
-
-// ==================== Vector & Position ====================
+// src/types/index.ts - Complete Type System
 
 export interface Vector2D {
     x: number;
     y: number;
 }
 
-export interface Position extends Vector2D {}
-
-// ==================== Game Configuration ====================
-
-export interface GameConfig {
-    // Room settings
-    maxPlayers: number;
-    minPlayers: number;
-    
-    // Timing
-    waitingDuration: number;           // 30 minutes default
-    countdownDuration: number;         // 10 seconds
-    
-    // Map
-    mapWidth: number;
-    mapHeight: number;
-    
-    // Safe Zone
-    initialSafeZoneRadius: number;
-    minSafeZoneRadius: number;
-    safeZoneShrinkInterval: number;    // 60 seconds
-    safeZoneDamagePerSecond: number;   // 5 HP/sec
-    
-    // Player
-    maxHp: number;
-    playerRadius: number;
-    playerSpeed: number;
-    
-    // Collision
-    enableCollision: boolean;
-    pushForce: number;
-    collisionDamping: number;
-}
-
-// ==================== Game Phase ====================
-
-export type GamePhase = 'waiting' | 'countdown' | 'active' | 'ended';
-
-// ==================== Player State ====================
-
 export interface PlayerState {
     id: string;
     walletAddress: string;
-    position: Position;
-    velocity: Vector2D;
+    username?: string;
+
+    // Position & Movement
+    x: number;
+    y: number;
+    velocityX: number;
+    velocityY: number;
+    rotation: number;
+
+    // Game State
     hp: number;
     maxHp: number;
-    radius: number;
-    speed: number;
-    eliminated: boolean;
     vsolBalance: number;
+    score: number;
+    kills: number;
+
+    // Status
     ready: boolean;
-    color: string;
+    eliminated: boolean;
+    isAlive: boolean;
+    isInSafeZone: boolean;
+
+    // Timestamps
+    joinedAt: number;
     lastUpdate: number;
-    kills?: number;
+    eliminatedAt?: number;
 }
 
-// ==================== Safe Zone ====================
+export type GamePhase = 'waiting' | 'countdown' | 'active' | 'ended';
+
+export interface GameConfig {
+    gameId: string;
+    maxPlayers: number;
+    minPlayers: number;
+    waitingDuration: number;        // 30 minutes in ms
+    countdownDuration: number;      // 10 seconds
+    gameDuration: number;           // Max game time
+
+    // Map settings
+    mapWidth: number;
+    mapHeight: number;
+
+    // Safe zone
+    initialSafeZoneRadius: number;
+    minSafeZoneRadius: number;
+    safeZoneShrinkInterval: number; // Time between shrinks
+    safeZoneDamagePerSecond: number;
+
+    // Player settings
+    playerRadius: number;
+    playerSpeed: number;
+    playerMaxHp: number;
+    pushForce: number;
+
+    // Collision
+    enableCollision: boolean;
+    collisionDamping: number;
+}
 
 export interface SafeZoneState {
-    center: Position;
+    centerX: number;
+    centerY: number;
     radius: number;
     targetRadius: number;
     shrinking: boolean;
-    damagePerSecond: number;
+    nextShrinkAt: number;
 }
 
-// ==================== WebSocket Messages ====================
+export interface GameRoomState {
+    gameId: string;
+    phase: GamePhase;
+    players: Map<string, PlayerState>;
+    safeZone: SafeZoneState;
 
-export type WSMessageType = 
-    // Connection
-    | 'connected'           // ✅ NEW: Server confirms connection
-    | 'join'               // ✅ NEW: Client requests to join with vsolBalance
-    | 'joined'             // ✅ NEW: Server confirms player joined
-    | 'connect'
-    | 'disconnect'
-    | 'error'
-    | 'ping'
-    | 'pong'
-    
-    // Sync
-    | 'sync'
-    | 'request_sync'
-    
-    // Player actions
-    | 'player:connected'
-    | 'player:disconnected'
-    | 'player:update'
-    | 'player:ready'
-    | 'player:eliminated'
-    
-    // Game state
-    | 'phase:change'
-    | 'countdown:update'
-    | 'game:start'
-    | 'game:winner'
-    
-    // Safe zone
-    | 'safezone:update'
-    | 'safezone:shrink';
+    // Timing
+    createdAt: number;
+    waitingEndsAt: number;
+    countdownStartedAt?: number;
+    gameStartedAt?: number;
+    gameEndedAt?: number;
+
+    // Stats
+    totalPlayers: number;
+    readyPlayers: number;
+    alivePlayers: number;
+
+    winner?: string;
+}
 
 export interface WSMessage {
     type: WSMessageType;
     timestamp?: number;
-    
-    // Connection messages
-    message?: string;              // For 'connected', 'joined', 'error'
-    vsolBalance?: number;          // ✅ NEW: For 'join' message
-    
-    // Player data
-    playerId?: string;
-    playerAddress?: string;
-    state?: PlayerState;
-    
-    // Game data
-    phase?: GamePhase;
+    [key: string]: any;
+}
+
+export type WSMessageType =
+    // Connection
+    | 'ping'
+    | 'pong'
+    | 'connect'
+    | 'disconnect'
+    | 'joined'
+    | 'connected'
+    | 'join'
+
+    // Sync
+    | 'sync'
+    | 'request_sync'
+
+    // Player actions
+    | 'player:update'
+    | 'player:ready'
+    | 'player:connected'
+    | 'player:disconnected'
+    | 'player:eliminated'
+
+    // Game flow
+    | 'game:phase'
+    | 'game:countdown'
+    | 'game:start'
+    | 'game:end'
+    | 'game:winner'
+
+    // Safe zone
+    | 'safezone:update'
+    | 'safezone:shrink'
+
+    // Errors
+    | 'error';
+
+export interface PlayerUpdateMessage extends WSMessage {
+    type: 'player:update';
+    state: Partial<PlayerState>;
+}
+
+export interface SyncMessage extends WSMessage {
+    type: 'sync';
+    players: PlayerState[];
+    safeZone: SafeZoneState;
+    phase: GamePhase;
     countdown?: number;
-    players?: PlayerState[];
-    safeZone?: SafeZoneState;
-    
-    // Game results
-    winnerId?: string;
-    finalStats?: {
+}
+
+export interface GamePhaseMessage extends WSMessage {
+    type: 'game:phase';
+    phase: GamePhase;
+}
+
+export interface CountdownMessage extends WSMessage {
+    type: 'game:countdown';
+    startTime: number;
+    duration: number;
+}
+
+export interface WinnerMessage extends WSMessage {
+    type: 'game:winner';
+    winnerId: string;
+    playerAddress: string;
+    finalStats: {
         kills: number;
         survivedTime: number;
-        finalPosition: Position;
+        finalPosition: Vector2D;
     };
-    
-    // Sync data
-    id?: string;
 }
 
-// ==================== Room Manager ====================
+export interface SafeZoneUpdateMessage extends WSMessage {
+    type: 'safezone:update';
+    safeZone: SafeZoneState;
+}
 
-export interface RoomStats {
+export interface ErrorMessage extends WSMessage {
+    type: 'error';
+    message: string;
+    code?: string;
+}
+
+// Statistics & Monitoring
+export interface ServerStats {
+    uptime: number;
+    totalGames: number;
+    activeGames: number;
+    totalPlayers: number;
+    messagesPerSecond: number;
+    memoryUsage: number;
+}
+
+export interface GameStats {
     gameId: string;
     phase: GamePhase;
-    playerCount: number;
-    readyCount: number;
-    createdAt: number;
-    waitingEndsAt: number;
-}
-
-export interface AddPlayerResult {
-    success: boolean;
-    error?: string;
-}
-
-// ==================== Collision System ====================
-
-export interface CollisionConfig {
-    playerRadius: number;
-    pushForce: number;
-    damping: number;
-    enabled: boolean;
-}
-
-export interface CollisionPair {
-    player1Id: string;
-    player2Id: string;
-    normal: Vector2D;
-    penetration: number;
+    duration: number;
+    totalPlayers: number;
+    alivePlayers: number;
+    readyPlayers: number;
+    safeZoneRadius: number;
+    averageLatency: number;
 }

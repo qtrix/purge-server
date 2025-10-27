@@ -22,20 +22,20 @@ export class RoomManager {
             waitingDuration: 30 * 60 * 1000,  // 30 minutes
             countdownDuration: 10 * 1000,      // 10 seconds
             gameDuration: 60 * 60 * 1000,      // 60 minutes max
-            
+
             mapWidth: 2000,
             mapHeight: 2000,
-            
+
             initialSafeZoneRadius: 900,
             minSafeZoneRadius: 100,
             safeZoneShrinkInterval: 60 * 1000, // Shrink every 60 seconds
             safeZoneDamagePerSecond: 5,
-            
+
             playerRadius: 20,
             playerSpeed: 200,
             playerMaxHp: 100,
             pushForce: 100,
-            
+
             enableCollision: true,
             collisionDamping: 0.95
         };
@@ -206,7 +206,7 @@ export class RoomManager {
             if (room.getPhase() === 'ended') {
                 toDelete.push(gameId);
             }
-            
+
             // Delete expired waiting rooms
             if (room.isExpired()) {
                 // Handle timeout - if 1 player ready, they win
