@@ -16,7 +16,7 @@
     "allowSyntheticDefaultImports": true
   },
   "include": [
-    "src/**/*.ts"
+    "game-server.ts"
   ],
   "exclude": [
     "node_modules",
