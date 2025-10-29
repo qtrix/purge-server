@@ -1,4 +1,3 @@
-// game-server.ts - WebSocket Server for Purge Game (Zero TypeScript Errors)
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -43,6 +42,9 @@ interface GameRoom {
     countdownDuration: number;
     gameStartTime: number | null;
     winner: string | null;
+    safeZoneRadius: number;
+    targetZoneRadius: number;
+    zoneShrinkRate: number;
 }
 
 // ==================== STATE ====================
@@ -53,13 +55,18 @@ const clients = new Map<string, ConnectedClient>();
 // ==================== HELPER FUNCTIONS ====================
 
 function broadcast(gameId: string, message: any, excludePlayerId?: string): void {
+    let sentCount = 0;
     clients.forEach((client) => {
         if (client.gameId === gameId && client.playerId !== excludePlayerId) {
             if (client.ws.readyState === WebSocket.OPEN) {
                 client.ws.send(JSON.stringify(message));
+                sentCount++;
             }
         }
     });
+    if (sentCount > 0) {
+        console.log(`[Broadcast] Sent to ${sentCount} clients in game ${gameId}`);
+    }
 }
 
 function sendToPlayer(playerId: string, message: any): void {
@@ -81,6 +88,9 @@ function getOrCreateGame(gameId: string): GameRoom {
             countdownDuration: 10,
             gameStartTime: null,
             winner: null,
+            safeZoneRadius: 400,
+            targetZoneRadius: 50,
+            zoneShrinkRate: 0.5
         });
     }
     return games.get(gameId)!;
@@ -151,14 +161,48 @@ function startGame(game: GameRoom): void {
 
     game.phase = 'active';
     game.gameStartTime = Date.now();
+    game.safeZoneRadius = 400;
 
     broadcast(game.gameId, {
         type: 'game_phase_change',
         phase: 'active'
     });
 
+    // ✅ SYNC GAME START TIME
+    broadcast(game.gameId, {
+        type: 'game_start_sync',
+        startTime: game.gameStartTime
+    });
+
     console.log(`[Game ${game.gameId}] ✅ Game started with ${game.players.size} players`);
 }
+
+// ==================== GAME STATE SYNC (NEW!) ====================
+
+setInterval(() => {
+    games.forEach((game) => {
+        if (game.phase === 'active' && game.gameStartTime) {
+            // ✅ Calculate game time
+            const elapsedSeconds = Math.floor((Date.now() - game.gameStartTime) / 1000);
+
+            // ✅ Shrink zone
+            game.safeZoneRadius = Math.max(
+                game.targetZoneRadius,
+                game.safeZoneRadius - game.zoneShrinkRate
+            );
+
+            // ✅ Broadcast synchronized game state
+            broadcast(game.gameId, {
+                type: 'game_state_sync',
+                gameTime: elapsedSeconds,
+                safeZoneRadius: game.safeZoneRadius,
+                alivePlayers: Array.from(game.players.values()).filter(p => p.alive).length
+            });
+
+            console.log(`[Game ${game.gameId}] 📡 Sync: Time=${elapsedSeconds}s, Zone=${game.safeZoneRadius.toFixed(1)}m`);
+        }
+    });
+}, 1000); // ✅ Sync every second
 
 // ==================== DEADLINE CHECKER ====================
 
@@ -216,11 +260,9 @@ wss.on('connection', (ws: WebSocket) => {
 
             // ==================== CONNECTION ====================
             if (type === 'connect') {
-                // ✅ Assign values first
                 gameId = message.gameId;
                 playerId = message.playerId;
 
-                // ✅ Null check before using
                 if (!playerId || !gameId) {
                     console.log('[WebSocket] ❌ Missing playerId or gameId');
                     return;
@@ -257,9 +299,11 @@ wss.on('connection', (ws: WebSocket) => {
 
                 ws.send(JSON.stringify({ type: 'connected' }));
 
+                // ✅ SEND FULL SYNC
                 ws.send(JSON.stringify({
                     type: 'sync',
-                    players: getPlayersArray(game)
+                    players: getPlayersArray(game),
+                    readyPlayers: Array.from(game.readyPlayers)
                 }));
 
                 broadcast(gameId, {
@@ -284,9 +328,10 @@ wss.on('connection', (ws: WebSocket) => {
 
                 console.log(`[Game ${gameId}] ✅ Player ${playerId.slice(0, 8)} marked ready (${game.readyPlayers.size}/${game.players.size})`);
 
+                // ✅ BROADCAST UPDATED READY PLAYERS LIST
                 broadcast(gameId, {
-                    type: 'player_ready',
-                    playerId,
+                    type: 'ready_players_update',
+                    readyPlayers: Array.from(game.readyPlayers),
                     readyCount: game.readyPlayers.size,
                     totalPlayers: game.players.size
                 });
@@ -294,6 +339,22 @@ wss.on('connection', (ws: WebSocket) => {
                 if (game.readyPlayers.size === game.players.size && game.players.size > 0) {
                     console.log(`[Game ${gameId}] 🎮 All players ready!`);
                 }
+            }
+
+            // ==================== REQUEST SYNC ====================
+            else if (type === 'request_sync') {
+                if (!playerId || !gameId) return;
+
+                const game = games.get(gameId);
+                if (!game) return;
+
+                sendToPlayer(playerId, {
+                    type: 'sync',
+                    players: getPlayersArray(game),
+                    readyPlayers: Array.from(game.readyPlayers)
+                });
+
+                console.log(`[Game ${gameId}] 📡 Sync sent to ${playerId.slice(0, 8)}`);
             }
 
             // ==================== SET DEADLINE ====================
@@ -361,11 +422,14 @@ wss.on('connection', (ws: WebSocket) => {
                     lastUpdate: Date.now()
                 });
 
+                // ✅ BROADCAST TO ALL OTHER PLAYERS
                 broadcast(gameId, {
                     type: 'update',
                     playerId,
                     state: player
                 }, playerId);
+
+                // console.log(`[Game ${gameId}] 📤 Update from ${playerId.slice(0, 8)}`);
             }
 
             // ==================== PLAYER ELIMINATED ====================
@@ -482,7 +546,6 @@ app.get('/api/game/:gameId', (req, res) => {
         return res.status(404).json({ error: 'Game not found' });
     }
 
-    // ✅ Explicit return to satisfy TypeScript
     return res.json({
         gameId: game.gameId,
         phase: game.phase,
@@ -494,7 +557,8 @@ app.get('/api/game/:gameId', (req, res) => {
             y: p.y
         })),
         readyPlayers: Array.from(game.readyPlayers),
-        winner: game.winner
+        winner: game.winner,
+        safeZoneRadius: game.safeZoneRadius
     });
 });
 
@@ -536,6 +600,7 @@ httpServer.listen(PORT, () => {
 ║   📡 WebSocket: ws://localhost:${PORT}                  ║
 ║   🌐 HTTP API: http://localhost:${PORT}                 ║
 ║   💚 Health check: http://localhost:${PORT}/health      ║
+║   🔄 Game state sync: Every 1 second                  ║
 ║                                                       ║
 ╚═══════════════════════════════════════════════════════╝
     `);
