@@ -4,12 +4,12 @@
   "description": "WebSocket server for Purge Game multiplayer",
   "main": "dist/server.js",
   "scripts": {
-    "dev": "ts-node-dev --respawn --transpile-only game-server.ts",
+    "dev": "ts-node-dev --respawn --transpile-only src/game-server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
     "watch": "tsc -w",
     "clean": "rm -rf dist",
-    "start:dev": "ts-node-dev --respawn --transpile-only game-server.ts"
+    "start:dev": "ts-node-dev --respawn --transpile-only src/game-server.ts"
   },
   "keywords": [
     "websocket",
