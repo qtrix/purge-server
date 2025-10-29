@@ -1,4 +1,4 @@
-// server.ts - WebSocket Server for Purge Game
+// game-server.ts - WebSocket Server for Purge Game (Zero TypeScript Errors)
 import express from 'express';
 import { createServer } from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
@@ -52,8 +52,8 @@ const clients = new Map<string, ConnectedClient>();
 
 // ==================== HELPER FUNCTIONS ====================
 
-function broadcast(gameId: string, message: any, excludePlayerId?: string) {
-    clients.forEach((client, clientId) => {
+function broadcast(gameId: string, message: any, excludePlayerId?: string): void {
+    clients.forEach((client) => {
         if (client.gameId === gameId && client.playerId !== excludePlayerId) {
             if (client.ws.readyState === WebSocket.OPEN) {
                 client.ws.send(JSON.stringify(message));
@@ -62,7 +62,7 @@ function broadcast(gameId: string, message: any, excludePlayerId?: string) {
     });
 }
 
-function sendToPlayer(playerId: string, message: any) {
+function sendToPlayer(playerId: string, message: any): void {
     const client = clients.get(playerId);
     if (client && client.ws.readyState === WebSocket.OPEN) {
         client.ws.send(JSON.stringify(message));
@@ -86,11 +86,11 @@ function getOrCreateGame(gameId: string): GameRoom {
     return games.get(gameId)!;
 }
 
-function getPlayersArray(game: GameRoom) {
+function getPlayersArray(game: GameRoom): PlayerState[] {
     return Array.from(game.players.values());
 }
 
-function checkForWinner(game: GameRoom) {
+function checkForWinner(game: GameRoom): void {
     const alivePlayers = Array.from(game.players.values()).filter(p => p.alive);
 
     if (alivePlayers.length === 1 && game.phase === 'active') {
@@ -114,7 +114,7 @@ function checkForWinner(game: GameRoom) {
 
 // ==================== COUNTDOWN SYSTEM ====================
 
-function startCountdown(game: GameRoom) {
+function startCountdown(game: GameRoom): void {
     if (game.phase !== 'waiting') {
         console.log(`[Game ${game.gameId}] ⚠️ Cannot start countdown - game not in waiting phase`);
         return;
@@ -125,7 +125,6 @@ function startCountdown(game: GameRoom) {
     game.phase = 'countdown';
     game.countdownStartTime = Date.now();
 
-    // Notify all clients
     broadcast(game.gameId, {
         type: 'game_phase_change',
         phase: 'countdown'
@@ -137,13 +136,12 @@ function startCountdown(game: GameRoom) {
         duration: game.countdownDuration
     });
 
-    // After countdown, start game
     setTimeout(() => {
         startGame(game);
     }, game.countdownDuration * 1000);
 }
 
-function startGame(game: GameRoom) {
+function startGame(game: GameRoom): void {
     if (game.phase === 'ended') {
         console.log(`[Game ${game.gameId}] ⚠️ Game already ended`);
         return;
@@ -197,7 +195,6 @@ setInterval(() => {
                 });
             } else {
                 console.log(`[Game ${game.gameId}] ⚠️ No players ready - extending deadline`);
-                // Extend deadline by 1 hour
                 game.deadline = now + 3600000;
             }
         }
@@ -209,7 +206,6 @@ setInterval(() => {
 wss.on('connection', (ws: WebSocket) => {
     console.log('[WebSocket] 🔗 New connection');
 
-    let clientId: string | null = null;
     let playerId: string | null = null;
     let gameId: string | null = null;
 
@@ -220,13 +216,18 @@ wss.on('connection', (ws: WebSocket) => {
 
             // ==================== CONNECTION ====================
             if (type === 'connect') {
+                // ✅ Assign values first
                 gameId = message.gameId;
                 playerId = message.playerId;
-                clientId = `${gameId}-${playerId}`;
+
+                // ✅ Null check before using
+                if (!playerId || !gameId) {
+                    console.log('[WebSocket] ❌ Missing playerId or gameId');
+                    return;
+                }
 
                 console.log(`[WebSocket] 👋 Player connecting: ${playerId.slice(0, 8)} to game ${gameId}`);
 
-                // Store client
                 clients.set(playerId, {
                     ws,
                     playerId,
@@ -234,10 +235,8 @@ wss.on('connection', (ws: WebSocket) => {
                     isAlive: true
                 });
 
-                // Get or create game
                 const game = getOrCreateGame(gameId);
 
-                // Add player if not exists
                 if (!game.players.has(playerId)) {
                     const colors = ['#FF4444', '#44FF44', '#4444FF', '#FFFF44', '#FF44FF', '#44FFFF'];
                     const playerIndex = game.players.size;
@@ -256,16 +255,13 @@ wss.on('connection', (ws: WebSocket) => {
                     });
                 }
 
-                // Send connected event
                 ws.send(JSON.stringify({ type: 'connected' }));
 
-                // Send sync with all players
                 ws.send(JSON.stringify({
                     type: 'sync',
                     players: getPlayersArray(game)
                 }));
 
-                // Notify others
                 broadcast(gameId, {
                     type: 'player_connected',
                     playerId
@@ -288,7 +284,6 @@ wss.on('connection', (ws: WebSocket) => {
 
                 console.log(`[Game ${gameId}] ✅ Player ${playerId.slice(0, 8)} marked ready (${game.readyPlayers.size}/${game.players.size})`);
 
-                // Broadcast to all players
                 broadcast(gameId, {
                     type: 'player_ready',
                     playerId,
@@ -296,7 +291,6 @@ wss.on('connection', (ws: WebSocket) => {
                     totalPlayers: game.players.size
                 });
 
-                // Check if all players are ready
                 if (game.readyPlayers.size === game.players.size && game.players.size > 0) {
                     console.log(`[Game ${gameId}] 🎮 All players ready!`);
                 }
@@ -332,7 +326,6 @@ wss.on('connection', (ws: WebSocket) => {
                 if (readyCount >= 2) {
                     startCountdown(game);
                 } else if (readyCount === 1) {
-                    // Auto-winner
                     const winnerId = Array.from(game.readyPlayers)[0];
                     game.winner = winnerId;
                     game.phase = 'ended';
@@ -363,13 +356,11 @@ wss.on('connection', (ws: WebSocket) => {
                 const player = game.players.get(playerId);
                 if (!player) return;
 
-                // Update player state
                 Object.assign(player, message.data, {
-                    id: playerId, // Ensure ID doesn't change
+                    id: playerId,
                     lastUpdate: Date.now()
                 });
 
-                // Broadcast to other players
                 broadcast(gameId, {
                     type: 'update',
                     playerId,
@@ -391,13 +382,11 @@ wss.on('connection', (ws: WebSocket) => {
 
                 console.log(`[Game ${gameId}] 💀 Player eliminated:`, playerId.slice(0, 8));
 
-                // Broadcast to all players
                 broadcast(gameId, {
                     type: 'eliminated',
                     playerId
                 });
 
-                // Check for winner
                 checkForWinner(game);
             }
 
@@ -424,7 +413,7 @@ wss.on('connection', (ws: WebSocket) => {
                 });
             }
 
-        } catch (error) {
+        } catch (error: unknown) {
             console.error('[WebSocket] ❌ Error processing message:', error);
         }
     });
@@ -435,25 +424,22 @@ wss.on('connection', (ws: WebSocket) => {
 
             clients.delete(playerId);
 
-            // Notify others
             broadcast(gameId, {
                 type: 'player_disconnected',
                 playerId
             });
 
-            // Optionally mark player as disconnected but keep in game
             const game = games.get(gameId);
             if (game) {
                 const player = game.players.get(playerId);
                 if (player) {
-                    // Keep player in game for potential reconnection
                     console.log(`[Game ${gameId}] ⚠️ Player ${playerId.slice(0, 8)} disconnected but kept in game`);
                 }
             }
         }
     });
 
-    ws.on('error', (error) => {
+    ws.on('error', (error: Error) => {
         console.error('[WebSocket] ❌ Error:', error);
     });
 });
@@ -461,12 +447,14 @@ wss.on('connection', (ws: WebSocket) => {
 // ==================== HEARTBEAT ====================
 
 const heartbeatInterval = setInterval(() => {
-    wss.clients.forEach((ws) => {
-        if ((ws as any).isAlive === false) {
+    wss.clients.forEach((ws: WebSocket) => {
+        const extWs = ws as WebSocket & { isAlive?: boolean };
+
+        if (extWs.isAlive === false) {
             return ws.terminate();
         }
 
-        (ws as any).isAlive = false;
+        extWs.isAlive = false;
         ws.ping();
     });
 }, 30000);
@@ -494,7 +482,8 @@ app.get('/api/game/:gameId', (req, res) => {
         return res.status(404).json({ error: 'Game not found' });
     }
 
-    res.json({
+    // ✅ Explicit return to satisfy TypeScript
+    return res.json({
         gameId: game.gameId,
         phase: game.phase,
         players: Array.from(game.players.values()).map(p => ({
