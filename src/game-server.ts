@@ -42,6 +42,9 @@ interface GameRoom {
     countdownDuration: number;
     gameStartTime: number | null;
     winner: string | null;
+    prizeAmount: number; // ✅ NEW: Track prize amount
+    ended: boolean; // ✅ NEW: Track if game is permanently ended
+    endedAt: number | null; // ✅ NEW: When game ended
     safeZoneRadius: number;
     targetZoneRadius: number;
     zoneShrinkRate: number;
@@ -88,6 +91,9 @@ function getOrCreateGame(gameId: string): GameRoom {
             countdownDuration: 10,
             gameStartTime: null,
             winner: null,
+            prizeAmount: 0, // ✅ NEW
+            ended: false, // ✅ NEW
+            endedAt: null, // ✅ NEW
             safeZoneRadius: 400,
             targetZoneRadius: 50,
             zoneShrinkRate: 0.5
@@ -100,31 +106,79 @@ function getPlayersArray(game: GameRoom): PlayerState[] {
     return Array.from(game.players.values());
 }
 
+// ✅ ENHANCED: Check for winner and mark game as ended
 function checkForWinner(game: GameRoom): void {
     const alivePlayers = Array.from(game.players.values()).filter(p => p.alive);
 
-    if (alivePlayers.length === 1 && game.phase === 'active') {
+    if (alivePlayers.length === 1 && game.phase === 'active' && !game.ended) {
         const winner = alivePlayers[0];
+
+        // ✅ Mark game as ended
+        game.ended = true;
+        game.endedAt = Date.now();
         game.winner = winner.id;
         game.phase = 'ended';
 
         console.log(`[Game ${game.gameId}] 🏆 Winner:`, winner.id.slice(0, 8));
+        console.log(`[Game ${game.gameId}] ✅ Game marked as ENDED`);
 
+        // ✅ Broadcast winner
         broadcast(game.gameId, {
             type: 'winner',
-            winnerId: winner.id
+            winnerId: winner.id,
+            prizeAmount: game.prizeAmount
         });
 
+        // ✅ Broadcast phase change
         broadcast(game.gameId, {
             type: 'game_phase_change',
             phase: 'ended'
         });
+
+        // ✅ Broadcast game ended
+        broadcast(game.gameId, {
+            type: 'game_ended',
+            winnerId: winner.id,
+            prizeAmount: game.prizeAmount,
+            endedAt: game.endedAt
+        });
+
+        // ✅ Schedule cleanup after 5 minutes
+        setTimeout(() => {
+            cleanupGame(game.gameId);
+        }, 5 * 60 * 1000);
     }
+}
+
+// ✅ NEW: Cleanup game function
+function cleanupGame(gameId: string): void {
+    const game = games.get(gameId);
+    if (!game) return;
+
+    console.log(`[Game ${gameId}] 🧹 Cleaning up game...`);
+
+    // Close all connections
+    clients.forEach((client) => {
+        if (client.gameId === gameId && client.ws.readyState === WebSocket.OPEN) {
+            client.ws.close();
+        }
+    });
+
+    // Remove game
+    games.delete(gameId);
+
+    console.log(`[Game ${gameId}] ✅ Game cleaned up`);
 }
 
 // ==================== COUNTDOWN SYSTEM ====================
 
 function startCountdown(game: GameRoom): void {
+    // ✅ Don't start if game ended
+    if (game.ended) {
+        console.log(`[Game ${game.gameId}] ⚠️ Cannot start countdown - game has ended`);
+        return;
+    }
+
     if (game.phase !== 'waiting') {
         console.log(`[Game ${game.gameId}] ⚠️ Cannot start countdown - game not in waiting phase`);
         return;
@@ -152,6 +206,12 @@ function startCountdown(game: GameRoom): void {
 }
 
 function startGame(game: GameRoom): void {
+    // ✅ Don't start if game ended
+    if (game.ended) {
+        console.log(`[Game ${game.gameId}] ⚠️ Game already ended - cannot start`);
+        return;
+    }
+
     if (game.phase === 'ended') {
         console.log(`[Game ${game.gameId}] ⚠️ Game already ended`);
         return;
@@ -168,7 +228,6 @@ function startGame(game: GameRoom): void {
         phase: 'active'
     });
 
-    // ✅ SYNC GAME START TIME
     broadcast(game.gameId, {
         type: 'game_start_sync',
         startTime: game.gameStartTime
@@ -177,21 +236,19 @@ function startGame(game: GameRoom): void {
     console.log(`[Game ${game.gameId}] ✅ Game started with ${game.players.size} players`);
 }
 
-// ==================== GAME STATE SYNC (NEW!) ====================
+// ==================== GAME STATE SYNC ====================
 
 setInterval(() => {
     games.forEach((game) => {
-        if (game.phase === 'active' && game.gameStartTime) {
-            // ✅ Calculate game time
+        // ✅ Only sync active games that haven't ended
+        if (game.phase === 'active' && game.gameStartTime && !game.ended) {
             const elapsedSeconds = Math.floor((Date.now() - game.gameStartTime) / 1000);
 
-            // ✅ Shrink zone
             game.safeZoneRadius = Math.max(
                 game.targetZoneRadius,
                 game.safeZoneRadius - game.zoneShrinkRate
             );
 
-            // ✅ Broadcast synchronized game state
             broadcast(game.gameId, {
                 type: 'game_state_sync',
                 gameTime: elapsedSeconds,
@@ -202,7 +259,7 @@ setInterval(() => {
             console.log(`[Game ${game.gameId}] 📡 Sync: Time=${elapsedSeconds}s, Zone=${game.safeZoneRadius.toFixed(1)}m`);
         }
     });
-}, 1000); // ✅ Sync every second
+}, 1000);
 
 // ==================== DEADLINE CHECKER ====================
 
@@ -210,7 +267,8 @@ setInterval(() => {
     const now = Date.now();
 
     games.forEach((game) => {
-        if (game.phase !== 'waiting' || !game.deadline) return;
+        // ✅ Don't process if game ended
+        if (game.phase !== 'waiting' || !game.deadline || game.ended) return;
 
         if (now >= game.deadline) {
             const readyCount = game.readyPlayers.size;
@@ -223,6 +281,10 @@ setInterval(() => {
                 startCountdown(game);
             } else if (readyCount === 1) {
                 const winnerId = Array.from(game.readyPlayers)[0];
+
+                // ✅ Mark game as ended
+                game.ended = true;
+                game.endedAt = Date.now();
                 game.winner = winnerId;
                 game.phase = 'ended';
 
@@ -230,12 +292,19 @@ setInterval(() => {
 
                 broadcast(game.gameId, {
                     type: 'winner',
-                    winnerId
+                    winnerId,
+                    prizeAmount: game.prizeAmount
                 });
 
                 broadcast(game.gameId, {
                     type: 'game_phase_change',
                     phase: 'ended'
+                });
+
+                broadcast(game.gameId, {
+                    type: 'game_ended',
+                    winnerId,
+                    prizeAmount: game.prizeAmount
                 });
             } else {
                 console.log(`[Game ${game.gameId}] ⚠️ No players ready - extending deadline`);
@@ -270,14 +339,33 @@ wss.on('connection', (ws: WebSocket) => {
 
                 console.log(`[WebSocket] 👋 Player connecting: ${playerId.slice(0, 8)} to game ${gameId}`);
 
+                const game = getOrCreateGame(gameId);
+
+                // ✅ Check if game has ended
+                if (game.ended) {
+                    console.log(`[WebSocket] ❌ Game ${gameId} has ended - rejecting connection`);
+
+                    ws.send(JSON.stringify({
+                        type: 'error',
+                        message: 'This game has already ended. Please join a different game.'
+                    }));
+
+                    ws.send(JSON.stringify({
+                        type: 'game_ended',
+                        winnerId: game.winner,
+                        prizeAmount: game.prizeAmount
+                    }));
+
+                    ws.close(1008, 'Game has ended');
+                    return;
+                }
+
                 clients.set(playerId, {
                     ws,
                     playerId,
                     gameId,
                     isAlive: true
                 });
-
-                const game = getOrCreateGame(gameId);
 
                 if (!game.players.has(playerId)) {
                     const colors = ['#FF4444', '#44FF44', '#4444FF', '#FFFF44', '#FF44FF', '#44FFFF'];
@@ -299,7 +387,6 @@ wss.on('connection', (ws: WebSocket) => {
 
                 ws.send(JSON.stringify({ type: 'connected' }));
 
-                // ✅ SEND FULL SYNC
                 ws.send(JSON.stringify({
                     type: 'sync',
                     players: getPlayersArray(game),
@@ -324,11 +411,20 @@ wss.on('connection', (ws: WebSocket) => {
                     return;
                 }
 
+                // ✅ Don't allow marking ready if game ended
+                if (game.ended) {
+                    console.log(`[WebSocket] ❌ Cannot mark ready - game has ended`);
+                    ws.send(JSON.stringify({
+                        type: 'error',
+                        message: 'Game has ended'
+                    }));
+                    return;
+                }
+
                 game.readyPlayers.add(playerId);
 
                 console.log(`[Game ${gameId}] ✅ Player ${playerId.slice(0, 8)} marked ready (${game.readyPlayers.size}/${game.players.size})`);
 
-                // ✅ BROADCAST UPDATED READY PLAYERS LIST
                 broadcast(gameId, {
                     type: 'ready_players_update',
                     readyPlayers: Array.from(game.readyPlayers),
@@ -362,11 +458,23 @@ wss.on('connection', (ws: WebSocket) => {
                 if (!gameId) return;
 
                 const game = games.get(gameId);
-                if (!game) return;
+                if (!game || game.ended) return;
 
                 game.deadline = message.deadline;
 
                 console.log(`[Game ${gameId}] ⏰ Deadline set to ${new Date(message.deadline).toISOString()}`);
+            }
+
+            // ==================== SET PRIZE AMOUNT ====================
+            else if (type === 'set_prize_amount') {
+                if (!gameId) return;
+
+                const game = games.get(gameId);
+                if (!game) return;
+
+                game.prizeAmount = message.prizeAmount;
+
+                console.log(`[Game ${gameId}] 💰 Prize amount set to ${game.prizeAmount} SOL`);
             }
 
             // ==================== START GAME ====================
@@ -379,6 +487,16 @@ wss.on('connection', (ws: WebSocket) => {
                     return;
                 }
 
+                // ✅ Don't allow starting if game ended
+                if (game.ended) {
+                    console.log(`[WebSocket] ❌ Cannot start game - already ended`);
+                    ws.send(JSON.stringify({
+                        type: 'error',
+                        message: 'Game has already ended'
+                    }));
+                    return;
+                }
+
                 const readyCount = game.readyPlayers.size;
                 const totalPlayers = game.players.size;
 
@@ -388,6 +506,10 @@ wss.on('connection', (ws: WebSocket) => {
                     startCountdown(game);
                 } else if (readyCount === 1) {
                     const winnerId = Array.from(game.readyPlayers)[0];
+
+                    // ✅ Mark game as ended
+                    game.ended = true;
+                    game.endedAt = Date.now();
                     game.winner = winnerId;
                     game.phase = 'ended';
 
@@ -395,12 +517,19 @@ wss.on('connection', (ws: WebSocket) => {
 
                     broadcast(gameId, {
                         type: 'winner',
-                        winnerId
+                        winnerId,
+                        prizeAmount: game.prizeAmount
                     });
 
                     broadcast(gameId, {
                         type: 'game_phase_change',
                         phase: 'ended'
+                    });
+
+                    broadcast(gameId, {
+                        type: 'game_ended',
+                        winnerId,
+                        prizeAmount: game.prizeAmount
                     });
                 } else {
                     console.log(`[Game ${gameId}] ⚠️ Cannot start - not enough ready players`);
@@ -414,6 +543,12 @@ wss.on('connection', (ws: WebSocket) => {
                 const game = games.get(gameId);
                 if (!game) return;
 
+                // ✅ Ignore updates if game ended
+                if (game.ended) {
+                    // console.log(`[Game ${gameId}] Ignoring update from ${playerId.slice(0, 8)} - game has ended`);
+                    return;
+                }
+
                 const player = game.players.get(playerId);
                 if (!player) return;
 
@@ -422,14 +557,11 @@ wss.on('connection', (ws: WebSocket) => {
                     lastUpdate: Date.now()
                 });
 
-                // ✅ BROADCAST TO ALL OTHER PLAYERS
                 broadcast(gameId, {
                     type: 'update',
                     playerId,
                     state: player
                 }, playerId);
-
-                // console.log(`[Game ${gameId}] 📤 Update from ${playerId.slice(0, 8)}`);
             }
 
             // ==================== PLAYER ELIMINATED ====================
@@ -437,7 +569,7 @@ wss.on('connection', (ws: WebSocket) => {
                 if (!playerId || !gameId) return;
 
                 const game = games.get(gameId);
-                if (!game) return;
+                if (!game || game.ended) return;
 
                 const player = game.players.get(playerId);
                 if (!player) return;
@@ -461,20 +593,53 @@ wss.on('connection', (ws: WebSocket) => {
                 const game = games.get(gameId);
                 if (!game) return;
 
-                game.winner = message.winnerId;
-                game.phase = 'ended';
+                // ✅ Prevent multiple winner declarations
+                if (game.ended) {
+                    console.log(`[Game ${gameId}] ⚠️ Winner already declared - ignoring duplicate`);
+                    ws.send(JSON.stringify({
+                        type: 'error',
+                        message: 'Winner already declared for this game'
+                    }));
+                    return;
+                }
 
-                console.log(`[Game ${gameId}] 🏆 Winner declared:`, message.winnerId.slice(0, 8));
+                const winnerId = message.winnerId;
+
+                console.log(`[Game ${gameId}] 🏆 Winner declared:`, winnerId.slice(0, 8));
+
+                // ✅ Mark game as ended
+                game.ended = true;
+                game.endedAt = Date.now();
+                game.winner = winnerId;
+                game.phase = 'ended';
 
                 broadcast(gameId, {
                     type: 'winner',
-                    winnerId: message.winnerId
+                    winnerId,
+                    prizeAmount: game.prizeAmount
                 });
 
                 broadcast(gameId, {
                     type: 'game_phase_change',
                     phase: 'ended'
                 });
+
+                broadcast(gameId, {
+                    type: 'game_ended',
+                    winnerId,
+                    prizeAmount: game.prizeAmount,
+                    endedAt: game.endedAt
+                });
+
+                // ✅ Send confirmation
+                ws.send(JSON.stringify({
+                    type: 'winner_confirmed',
+                    winnerId,
+                    prizeAmount: game.prizeAmount,
+                    timestamp: Date.now()
+                }));
+
+                console.log(`[Game ${gameId}] ✅ Game marked as ENDED`);
             }
 
         } catch (error: unknown) {
@@ -488,13 +653,15 @@ wss.on('connection', (ws: WebSocket) => {
 
             clients.delete(playerId);
 
-            broadcast(gameId, {
-                type: 'player_disconnected',
-                playerId
-            });
-
             const game = games.get(gameId);
-            if (game) {
+
+            // ✅ Don't broadcast disconnection if game has ended
+            if (game && !game.ended) {
+                broadcast(gameId, {
+                    type: 'player_disconnected',
+                    playerId
+                });
+
                 const player = game.players.get(playerId);
                 if (player) {
                     console.log(`[Game ${gameId}] ⚠️ Player ${playerId.slice(0, 8)} disconnected but kept in game`);
@@ -549,6 +716,9 @@ app.get('/api/game/:gameId', (req, res) => {
     return res.json({
         gameId: game.gameId,
         phase: game.phase,
+        ended: game.ended, // ✅ NEW
+        winner: game.winner,
+        prizeAmount: game.prizeAmount, // ✅ NEW
         players: Array.from(game.players.values()).map(p => ({
             id: p.id,
             alive: p.alive,
@@ -557,7 +727,6 @@ app.get('/api/game/:gameId', (req, res) => {
             y: p.y
         })),
         readyPlayers: Array.from(game.readyPlayers),
-        winner: game.winner,
         safeZoneRadius: game.safeZoneRadius
     });
 });
@@ -566,9 +735,11 @@ app.get('/api/games', (req, res) => {
     const gamesList = Array.from(games.values()).map(game => ({
         gameId: game.gameId,
         phase: game.phase,
+        ended: game.ended, // ✅ NEW
         playerCount: game.players.size,
         readyCount: game.readyPlayers.size,
-        winner: game.winner
+        winner: game.winner,
+        prizeAmount: game.prizeAmount // ✅ NEW
     }));
 
     res.json({ games: gamesList });
@@ -601,6 +772,8 @@ httpServer.listen(PORT, () => {
 ║   🌐 HTTP API: http://localhost:${PORT}                 ║
 ║   💚 Health check: http://localhost:${PORT}/health      ║
 ║   🔄 Game state sync: Every 1 second                  ║
+║   🏆 Winner declaration: ENABLED                      ║
+║   🛡️  Game ended protection: ENABLED                  ║
 ║                                                       ║
 ╚═══════════════════════════════════════════════════════╝
     `);
